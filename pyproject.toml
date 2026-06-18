@@ -1,0 +1,15 @@
+[project]
+name = "rag-chatbot"
+version = "0.1.0"
+description = "Layered RAG chatbot over hospital accreditation documents."
+requires-python = ">=3.11"
+dependencies = [
+    "pypdf>=5.0.0",
+    "sentence-transformers>=3.0.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
+[tool.setuptools.packages.find]
+include = ["rag_chatbot*"]
