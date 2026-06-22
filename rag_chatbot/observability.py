@@ -8,6 +8,8 @@ from time import perf_counter
 from typing import Any
 from uuid import uuid4
 
+from rag_chatbot.security_layer import sanitize_log_data
+
 
 LOGGER_NAME = "rag_chatbot"
 
@@ -53,7 +55,7 @@ def get_logger() -> logging.Logger:
 
 def log_event(event: str, *, level: int = logging.INFO, **fields: Any) -> None:
     """Emit one machine-readable JSON log event."""
-    payload = {"event": event, **fields}
+    payload = sanitize_log_data({"event": event, **fields})
     get_logger().log(level, json.dumps(payload, default=serialize_log_value))
 
 
