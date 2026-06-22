@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from threading import Lock
 from typing import Protocol
 
 from rag_chatbot.embedding_layer import IndexedChunk, SearchResult, chunk_to_embedding_text
@@ -60,6 +61,7 @@ class BGEReranker:
         self.model = AutoModelForSequenceClassification.from_pretrained(model_name)
         self.model.to(self.device)
         self.model.eval()
+        self._inference_lock = Lock()
 
     def score(
         self,
@@ -70,22 +72,27 @@ class BGEReranker:
     ) -> list[float]:
         """Return normalized relevance scores for query-passage pairs."""
         scores: list[float] = []
-        for start in range(0, len(passages), batch_size):
-            passage_batch = passages[start : start + batch_size]
-            pairs = [[query, passage] for passage in passage_batch]
-            inputs = self.tokenizer(
-                pairs,
-                padding=True,
-                truncation=True,
-                return_tensors="pt",
-                max_length=self.max_length,
-            ).to(self.device)
+        with self._inference_lock:
+            for start in range(0, len(passages), batch_size):
+                passage_batch = passages[start : start + batch_size]
+                pairs = [[query, passage] for passage in passage_batch]
+                inputs = self.tokenizer(
+                    pairs,
+                    padding=True,
+                    truncation=True,
+                    return_tensors="pt",
+                    max_length=self.max_length,
+                ).to(self.device)
 
-            with self.torch.no_grad():
-                logits = self.model(**inputs, return_dict=True).logits.view(-1).float()
-                normalized = self.torch.sigmoid(logits)
-            scores.extend(normalized.cpu().tolist())
+                with self.torch.no_grad():
+                    logits = self.model(**inputs, return_dict=True).logits.view(-1).float()
+                    normalized = self.torch.sigmoid(logits)
+                scores.extend(normalized.cpu().tolist())
         return scores
+
+    def warm_up(self) -> None:
+        """Run one tiny pair through the model before serving requests."""
+        self.score("warmup", ["warmup"], batch_size=1)
 
 
 def rerank_search_results(

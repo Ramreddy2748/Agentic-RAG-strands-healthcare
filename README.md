@@ -109,7 +109,6 @@ curl -X POST http://127.0.0.1:8000/ask \
   -d '{
     "question": "What are the quality management responsibilities?",
     "search_mode": "auto",
-    "candidate_k": 10,
     "top_k": 3,
     "rerank": true,
     "generate_answer": true
@@ -128,6 +127,114 @@ from the query. If routing is unavailable, the pipeline safely falls back to
 hybrid search. The selected candidates are then reranked with
 `BAAI/bge-reranker-v2-m3`. The top 3 chunks are sent to Gemini for a grounded
 answer with section and page citations.
+
+Retrieval depth is selected automatically from the routed mode:
+
+```text
+keyword  -> 5 candidates
+semantic -> 8 candidates
+hybrid   -> 12 candidates
+```
+
+The answer is returned in a clinician-friendly structure:
+
+```json
+{
+  "summary": {"text": "Direct answer", "citations": [1]},
+  "key_requirements": [
+    {"text": "Requirement", "citations": [1, 2]}
+  ],
+  "clinical_actions": [
+    {"text": "Practical action", "citations": [2]}
+  ],
+  "limitations": null
+}
+```
+
+Citation numbers map directly to the authoritative metadata in `sources`.
+
+## Observability
+
+Every query includes a request ID, candidate counts, and stage timings:
+
+```json
+{
+  "request_id": "d62d...",
+  "timings": {
+    "routing_ms": 420.1,
+    "retrieval_ms": 2100.4,
+    "fusion_ms": 0.08,
+    "reranking_ms": 8400.2,
+    "answer_generation_ms": 1800.5,
+    "total_ms": 12721.28
+  }
+}
+```
+
+The API also returns the request ID in the `X-Request-ID` header. Server logs
+are emitted as JSON and include the selected mode, candidate counts, returned
+sections, timings, and failures. Configure verbosity with `LOG_LEVEL`.
+
+## Model Lifecycle
+
+FastAPI loads BGE-M3 and the BGE reranker once during application startup,
+warms both models, and reuses them for every query. This removes repeated model
+loading from request latency.
+
+```text
+PRELOAD_MODELS=true
+MAX_CONCURRENT_REQUESTS=1
+```
+
+The default concurrency of one protects CPU and memory while shared Torch
+models are running. Increase it only after testing on the target machine.
+
+## Docker
+
+The image contains the API and Python dependencies. The generated vector index,
+Gemini credentials, and Hugging Face model cache remain outside the image.
+
+Build the image:
+
+```bash
+docker build -t agentic-healthcare-rag:local .
+```
+
+Run it directly:
+
+```bash
+docker run --rm \
+  --name agentic-healthcare-rag \
+  --env-file .env \
+  -p 8000:8000 \
+  -v "$PWD/.rag_index:/app/.rag_index:ro" \
+  -v rag-huggingface-cache:/home/appuser/.cache/huggingface \
+  agentic-healthcare-rag:local
+```
+
+Or use Docker Compose:
+
+```bash
+docker compose up --build
+```
+
+The first container startup downloads and warms the BGE models. Later starts
+reuse the `huggingface-cache` volume. Verify the container at:
+
+```text
+http://127.0.0.1:8000/health
+http://127.0.0.1:8000/docs
+```
+
+Stop Compose:
+
+```bash
+docker compose down
+```
+
+Do not copy `.env`, PDFs, `.rag_index`, or model caches into the image. In AWS,
+the same container can receive secrets from Secrets Manager and the index from
+S3 or a mounted volume.
 
 Set `GOOGLE_API_KEY` in `.env` or your shell to enable automatic routing.
 Manual modes remain available for debugging:
@@ -159,16 +266,8 @@ python scripts/search_vector_index.py \
   --no-rerank
 ```
 
-Tune the two retrieval stages independently:
-
-```bash
-python scripts/search_vector_index.py \
-  "What are the quality management responsibilities?" \
-  --candidate-k 15 \
-  --top-k 5 \
-  --semantic-weight 1.0 \
-  --keyword-weight 1.0
-```
+Hybrid fusion weights remain configurable with `--semantic-weight` and
+`--keyword-weight`.
 
 ## Retrieval Models
 

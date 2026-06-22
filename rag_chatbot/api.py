@@ -1,17 +1,20 @@
 from __future__ import annotations
 
+import asyncio
+from contextlib import asynccontextmanager
 from functools import lru_cache
 import os
 from pathlib import Path
 from typing import Literal
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
-from rag_chatbot.answer_layer import DEFAULT_ANSWER_MODEL
+from rag_chatbot.answer_layer import DEFAULT_ANSWER_MODEL, ClinicalAnswer
 from rag_chatbot.embedding_layer import DEFAULT_INDEX_DIR
+from rag_chatbot.observability import PipelineTimings, new_request_id
 from rag_chatbot.rag_service import RAGResponse, RAGService, RankedResult
 from rag_chatbot.reranking_layer import DEFAULT_RERANKER_MODEL
 from rag_chatbot.routing_layer import DEFAULT_ROUTER_MODEL
@@ -24,10 +27,11 @@ FallbackMode = Literal["semantic", "keyword", "hybrid"]
 class AskRequest(BaseModel):
     """Request controls for one RAG question."""
 
+    model_config = ConfigDict(extra="forbid")
+
     question: str = Field(min_length=1, max_length=2000)
     search_mode: SearchMode = "auto"
     router_fallback: FallbackMode = "hybrid"
-    candidate_k: int = Field(default=10, ge=1, le=50)
     top_k: int = Field(default=3, ge=1, le=10)
     rerank: bool = True
     generate_answer: bool = True
@@ -60,15 +64,28 @@ class RetrievalStatsResponse(BaseModel):
     final_results: int
 
 
+class PipelineTimingsResponse(BaseModel):
+    """Elapsed milliseconds for each query-time stage."""
+
+    routing_ms: float
+    retrieval_ms: float
+    fusion_ms: float
+    reranking_ms: float
+    answer_generation_ms: float
+    total_ms: float
+
+
 class AskResponse(BaseModel):
     """Structured API response for a grounded RAG question."""
 
+    request_id: str
     question: str
     search_mode: str
     routing_reason: str
-    answer: str | None
+    answer: ClinicalAnswer | None
     sources: list[SourceResponse]
     stats: RetrievalStatsResponse
+    timings: PipelineTimingsResponse
 
 
 class HealthResponse(BaseModel):
@@ -77,13 +94,8 @@ class HealthResponse(BaseModel):
     status: str
     index_dir: str
     index_available: bool
-
-
-app = FastAPI(
-    title="Agentic Healthcare RAG API",
-    description="Grounded search over DNV NIAHO hospital accreditation requirements.",
-    version="0.1.0",
-)
+    preload_models: bool
+    max_concurrent_requests: int
 
 
 @lru_cache(maxsize=1)
@@ -98,6 +110,41 @@ def get_rag_service() -> RAGService:
     )
 
 
+def env_flag(name: str, default: bool) -> bool:
+    """Read a conventional boolean environment variable."""
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+@asynccontextmanager
+async def lifespan(app_instance: FastAPI):
+    """Load and warm local models once before accepting API traffic."""
+    load_dotenv()
+    max_concurrent_requests = max(
+        1,
+        int(os.getenv("MAX_CONCURRENT_REQUESTS", "1")),
+    )
+    app_instance.state.request_limiter = asyncio.Semaphore(
+        max_concurrent_requests
+    )
+
+    should_preload = env_flag("PRELOAD_MODELS", True)
+    if should_preload and get_rag_service not in app_instance.dependency_overrides:
+        service = get_rag_service()
+        await run_in_threadpool(service.load_models, warm_up=True)
+    yield
+
+
+app = FastAPI(
+    title="Agentic Healthcare RAG API",
+    description="Grounded search over DNV NIAHO hospital accreditation requirements.",
+    version="0.1.0",
+    lifespan=lifespan,
+)
+
+
 @app.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     """Report whether the API process can see the persisted index."""
@@ -110,33 +157,66 @@ def health() -> HealthResponse:
         status="ok" if index_available else "degraded",
         index_dir=str(index_dir),
         index_available=index_available,
+        preload_models=env_flag("PRELOAD_MODELS", True),
+        max_concurrent_requests=max(
+            1,
+            int(os.getenv("MAX_CONCURRENT_REQUESTS", "1")),
+        ),
     )
 
 
 @app.post("/ask", response_model=AskResponse)
 async def ask(
     request: AskRequest,
+    http_request: Request,
+    http_response: Response,
     service: RAGService = Depends(get_rag_service),
 ) -> AskResponse:
     """Run one question through routing, retrieval, reranking, and answering."""
-    try:
-        response = await run_in_threadpool(
-            service.ask,
-            request.question,
-            search_mode=request.search_mode,
-            router_fallback=request.router_fallback,
-            candidate_k=request.candidate_k,
-            top_k=request.top_k,
-            rerank=request.rerank,
-            generate_answer=request.generate_answer,
-            answer_top_k=min(3, request.top_k),
+    request_id = http_request.headers.get("X-Request-ID") or new_request_id()
+    http_response.headers["X-Request-ID"] = request_id
+    request_limiter = getattr(http_request.app.state, "request_limiter", None)
+    if request_limiter is None:
+        request_limiter = asyncio.Semaphore(
+            max(1, int(os.getenv("MAX_CONCURRENT_REQUESTS", "1")))
         )
+        http_request.app.state.request_limiter = request_limiter
+    try:
+        async with request_limiter:
+            response = await run_in_threadpool(
+                service.ask,
+                request.question,
+                search_mode=request.search_mode,
+                router_fallback=request.router_fallback,
+                top_k=request.top_k,
+                rerank=request.rerank,
+                generate_answer=request.generate_answer,
+                answer_top_k=min(3, request.top_k),
+                request_id=request_id,
+            )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=400,
+            detail={"request_id": request_id, "error": str(exc)},
+        ) from exc
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=503,
+            detail={"request_id": request_id, "error": str(exc)},
+        ) from exc
     except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=503,
+            detail={"request_id": request_id, "error": str(exc)},
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "request_id": request_id,
+                "error": "Unexpected pipeline error.",
+            },
+        ) from exc
 
     return response_to_api(response)
 
@@ -144,6 +224,7 @@ async def ask(
 def response_to_api(response: RAGResponse) -> AskResponse:
     """Convert internal dataclasses into stable API response models."""
     return AskResponse(
+        request_id=response.request_id,
         question=response.question,
         search_mode=response.search_mode,
         routing_reason=response.routing_reason,
@@ -158,6 +239,19 @@ def response_to_api(response: RAGResponse) -> AskResponse:
             combined_candidates=response.stats.fused_candidates,
             final_results=response.stats.final_results,
         ),
+        timings=timings_to_api(response.timings),
+    )
+
+
+def timings_to_api(timings: PipelineTimings) -> PipelineTimingsResponse:
+    """Convert internal timing measurements to the API schema."""
+    return PipelineTimingsResponse(
+        routing_ms=timings.routing_ms,
+        retrieval_ms=timings.retrieval_ms,
+        fusion_ms=timings.fusion_ms,
+        reranking_ms=timings.reranking_ms,
+        answer_generation_ms=timings.answer_generation_ms,
+        total_ms=timings.total_ms,
     )
 
 

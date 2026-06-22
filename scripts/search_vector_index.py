@@ -19,7 +19,6 @@ def main() -> None:
     parser.add_argument("--index-dir", default=str(DEFAULT_INDEX_DIR))
     parser.add_argument("--top-k", type=int, default=3)
     parser.add_argument("--batch-size", type=int, default=8)
-    parser.add_argument("--candidate-k", type=int, default=10)
     parser.add_argument(
         "--search-mode",
         choices=("auto", "hybrid", "semantic", "keyword"),
@@ -51,7 +50,6 @@ def main() -> None:
         args.query,
         search_mode=args.search_mode,
         router_fallback=args.router_fallback,
-        candidate_k=args.candidate_k,
         top_k=args.top_k,
         embedding_batch_size=args.batch_size,
         semantic_weight=args.semantic_weight,
@@ -67,6 +65,7 @@ def main() -> None:
 
 def print_response(response: RAGResponse, *, reranked: bool) -> None:
     """Render a structured service response for terminal debugging."""
+    print(f"Request ID: {response.request_id}")
     print(
         f"Router selected: {response.search_mode} "
         f"({response.routing_reason})"
@@ -77,6 +76,15 @@ def print_response(response: RAGResponse, *, reranked: bool) -> None:
         f"keyword={response.stats.keyword_candidates}, "
         f"combined={response.stats.fused_candidates}, "
         f"final={response.stats.final_results}"
+    )
+    print(
+        "Timings (ms): "
+        f"routing={response.timings.routing_ms}, "
+        f"retrieval={response.timings.retrieval_ms}, "
+        f"fusion={response.timings.fusion_ms}, "
+        f"reranking={response.timings.reranking_ms}, "
+        f"answer={response.timings.answer_generation_ms}, "
+        f"total={response.timings.total_ms}"
     )
 
     for number, result in enumerate(response.results, start=1):
@@ -107,7 +115,19 @@ def print_response(response: RAGResponse, *, reranked: bool) -> None:
     if response.answer is not None:
         print()
         print("Grounded answer:")
-        print(response.answer)
+        print(response.answer.summary.text)
+        if response.answer.key_requirements:
+            print("\nKey requirements:")
+            for item in response.answer.key_requirements:
+                citations = ", ".join(f"[{number}]" for number in item.citations)
+                print(f"- {item.text} {citations}")
+        if response.answer.clinical_actions:
+            print("\nClinical actions:")
+            for item in response.answer.clinical_actions:
+                citations = ", ".join(f"[{number}]" for number in item.citations)
+                print(f"- {item.text} {citations}")
+        if response.answer.limitations:
+            print(f"\nLimitations: {response.answer.limitations}")
 
 
 if __name__ == "__main__":

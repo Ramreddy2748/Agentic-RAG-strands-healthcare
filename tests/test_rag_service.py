@@ -4,7 +4,11 @@ import unittest
 
 import numpy as np
 
-from rag_chatbot.answer_layer import AnswerGenerator
+from rag_chatbot.answer_layer import (
+    AnswerGenerator,
+    CitedStatement,
+    ClinicalAnswer,
+)
 from rag_chatbot.embedding_layer import VectorIndex
 from rag_chatbot.rag_service import RAGService
 from rag_chatbot.reranking_layer import PassageScorer
@@ -19,6 +23,9 @@ class KeywordRouter:
 
 
 class FakeReranker(PassageScorer):
+    def __init__(self) -> None:
+        self.warm_up_calls = 0
+
     def score(
         self,
         query: str,
@@ -28,10 +35,29 @@ class FakeReranker(PassageScorer):
     ) -> list[float]:
         return [1.0 - index * 0.1 for index in range(len(passages))]
 
+    def warm_up(self) -> None:
+        self.warm_up_calls += 1
+
+
+class FakeEmbedder:
+    def __init__(self) -> None:
+        self.warm_up_calls = 0
+
+    def encode(self, texts: list[str], *, batch_size: int = 8) -> np.ndarray:
+        return np.ones((len(texts), 2), dtype=np.float32)
+
+    def warm_up(self) -> None:
+        self.warm_up_calls += 1
+
 
 class FakeAnswerGenerator(AnswerGenerator):
-    def generate(self, prompt: str) -> str:
-        return "Grounded service answer. [Source 1: QM.1 TEST, pages 1]"
+    def generate(self, prompt: str) -> ClinicalAnswer:
+        return ClinicalAnswer(
+            summary=CitedStatement(
+                text="Grounded service answer.",
+                citations=[1],
+            )
+        )
 
 
 class RAGServiceTests(unittest.TestCase):
@@ -50,16 +76,80 @@ class RAGServiceTests(unittest.TestCase):
 
         response = service.ask(
             "Candidate",
-            candidate_k=3,
             top_k=2,
             answer_top_k=1,
+            request_id="test-request",
         )
 
+        self.assertEqual(response.request_id, "test-request")
         self.assertEqual(response.search_mode, "keyword")
         self.assertEqual(response.stats.semantic_candidates, 0)
         self.assertEqual(response.stats.keyword_candidates, 3)
         self.assertEqual(response.stats.final_results, 2)
-        self.assertIn("Grounded service answer", response.answer or "")
+        self.assertEqual(
+            response.answer.summary.text if response.answer else "",
+            "Grounded service answer.",
+        )
+        self.assertGreaterEqual(response.timings.total_ms, 0)
+        self.assertGreaterEqual(response.timings.routing_ms, 0)
+
+    def test_models_are_reused_and_warmed_only_once(self) -> None:
+        embedder = FakeEmbedder()
+        reranker = FakeReranker()
+        service = RAGService(
+            VectorIndex(
+                model_name="test-model",
+                chunks=[make_chunk(0)],
+                embeddings=np.ones((1, 2), dtype=np.float32),
+            ),
+            embedder=embedder,
+            reranker=reranker,
+        )
+
+        service.load_models(warm_up=True)
+        service.load_models(warm_up=True)
+
+        self.assertIs(service.get_embedder(), embedder)
+        self.assertIs(service.get_reranker(), reranker)
+        self.assertEqual(embedder.warm_up_calls, 1)
+        self.assertEqual(reranker.warm_up_calls, 1)
+
+    def test_candidate_count_is_selected_by_search_mode(self) -> None:
+        chunks = [make_chunk(index) for index in range(20)]
+        service = RAGService(
+            VectorIndex(
+                model_name="test-model",
+                chunks=chunks,
+                embeddings=np.ones((20, 2), dtype=np.float32),
+            ),
+            embedder=FakeEmbedder(),
+            reranker=FakeReranker(),
+        )
+
+        keyword = service.ask(
+            "Candidate",
+            search_mode="keyword",
+            rerank=False,
+            generate_answer=False,
+        )
+        semantic = service.ask(
+            "Candidate",
+            search_mode="semantic",
+            rerank=False,
+            generate_answer=False,
+        )
+        hybrid = service.ask(
+            "Candidate",
+            search_mode="hybrid",
+            rerank=False,
+            generate_answer=False,
+        )
+
+        self.assertEqual(keyword.stats.keyword_candidates, 5)
+        self.assertEqual(semantic.stats.semantic_candidates, 8)
+        self.assertEqual(hybrid.stats.semantic_candidates, 12)
+        self.assertEqual(hybrid.stats.keyword_candidates, 12)
+        self.assertEqual(hybrid.stats.fused_candidates, 12)
 
 
 if __name__ == "__main__":

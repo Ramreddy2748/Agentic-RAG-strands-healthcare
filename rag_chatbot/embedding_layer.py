@@ -3,7 +3,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 import json
 from pathlib import Path
-from typing import Iterable
+from threading import Lock
+from typing import Iterable, Protocol
 
 import numpy as np
 
@@ -48,6 +49,12 @@ class VectorIndex:
     embeddings: np.ndarray
 
 
+class TextEmbedder(Protocol):
+    """Interface for reusable text embedding models."""
+
+    def encode(self, texts: list[str], *, batch_size: int = 8) -> np.ndarray: ...
+
+
 class BGEEmbedder:
     """Local BGE-M3 embedder using sentence-transformers."""
 
@@ -62,15 +69,21 @@ class BGEEmbedder:
 
         self.model_name = model_name
         self.model = SentenceTransformer(model_name)
+        self._inference_lock = Lock()
 
     def encode(self, texts: list[str], *, batch_size: int = 8) -> np.ndarray:
-        embeddings = self.model.encode(
-            texts,
-            batch_size=batch_size,
-            normalize_embeddings=True,
-            show_progress_bar=True,
-        )
+        with self._inference_lock:
+            embeddings = self.model.encode(
+                texts,
+                batch_size=batch_size,
+                normalize_embeddings=True,
+                show_progress_bar=len(texts) > 1,
+            )
         return np.asarray(embeddings, dtype=np.float32)
+
+    def warm_up(self) -> None:
+        """Run one tiny inference so the first request avoids setup overhead."""
+        self.encode(["warmup"], batch_size=1)
 
 
 def build_vector_index(
@@ -138,13 +151,14 @@ def search_vector_index(
     *,
     top_k: int = 5,
     batch_size: int = 8,
+    embedder: TextEmbedder | None = None,
 ) -> list[SearchResult]:
     """Embed a query and return the closest chunks by cosine similarity."""
     if not query.strip():
         raise ValueError("query cannot be empty")
 
-    embedder = BGEEmbedder(index.model_name)
-    query_embedding = embedder.encode([query], batch_size=batch_size)[0]
+    active_embedder = embedder or BGEEmbedder(index.model_name)
+    query_embedding = active_embedder.encode([query], batch_size=batch_size)[0]
     scores = index.embeddings @ query_embedding
     top_indices = np.argsort(scores)[::-1][:top_k]
     return [
