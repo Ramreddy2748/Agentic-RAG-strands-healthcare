@@ -389,6 +389,27 @@ Do not copy `.env`, PDFs, `.rag_index`, or model caches into the image. In AWS,
 the same container can receive secrets from Secrets Manager and the index from
 S3 or a mounted volume.
 
+## Continuous Integration
+
+GitHub Actions runs automatically on pushes and pull requests targeting `main`.
+
+`CI` performs:
+
+- Python 3.12 dependency installation
+- Python source compilation
+- All unit tests with model downloads and Gemini calls disabled
+- A complete Docker image build without publishing the image
+
+`Security` performs:
+
+- Full-history secret scanning with Gitleaks
+- Python dependency vulnerability auditing with `pip-audit`
+- Dependency review for pull requests
+- A scheduled security scan every Monday
+
+View results under the repository's **Actions** tab. The workflows do not
+require `GOOGLE_API_KEY`, the source PDF, or `.rag_index`.
+
 Set `GOOGLE_API_KEY` in `.env` or your shell to enable automatic routing.
 Manual modes remain available for debugging:
 
