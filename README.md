@@ -1,5 +1,8 @@
 # Agentic RAG for Healthcare Accreditation
 
+[![CI](https://github.com/Ramreddy2748/Agentic-RAG-strands-healthcare/actions/workflows/ci.yml/badge.svg)](https://github.com/Ramreddy2748/Agentic-RAG-strands-healthcare/actions/workflows/ci.yml)
+[![Security](https://github.com/Ramreddy2748/Agentic-RAG-strands-healthcare/actions/workflows/security.yml/badge.svg)](https://github.com/Ramreddy2748/Agentic-RAG-strands-healthcare/actions/workflows/security.yml)
+
 A layered retrieval-augmented generation project for searching DNV NIAHO
 hospital accreditation requirements.
 
