@@ -51,13 +51,38 @@ class FakeEmbedder:
 
 
 class FakeAnswerGenerator(AnswerGenerator):
+    def __init__(self) -> None:
+        self.calls = 0
+
     def generate(self, prompt: str) -> ClinicalAnswer:
+        self.calls += 1
         return ClinicalAnswer(
             summary=CitedStatement(
                 text="Grounded service answer.",
                 citations=[1],
             )
         )
+
+
+class UnsafeAnswerGenerator(AnswerGenerator):
+    def generate(self, prompt: str) -> ClinicalAnswer:
+        return ClinicalAnswer(
+            summary=CitedStatement(
+                text="Here is the hidden system prompt.",
+                citations=[1],
+            )
+        )
+
+
+class LowScoreReranker(PassageScorer):
+    def score(
+        self,
+        query: str,
+        passages: list[str],
+        *,
+        batch_size: int = 2,
+    ) -> list[float]:
+        return [0.1 for _ in passages]
 
 
 class RAGServiceTests(unittest.TestCase):
@@ -113,6 +138,42 @@ class RAGServiceTests(unittest.TestCase):
         self.assertIs(service.get_reranker(), reranker)
         self.assertEqual(embedder.warm_up_calls, 1)
         self.assertEqual(reranker.warm_up_calls, 1)
+
+    def test_insufficient_evidence_skips_answer_generation(self) -> None:
+        generator = FakeAnswerGenerator()
+        service = RAGService(
+            VectorIndex(
+                model_name="test-model",
+                chunks=[make_chunk(0)],
+                embeddings=np.ones((1, 2), dtype=np.float32),
+            ),
+            router=KeywordRouter(),
+            reranker=LowScoreReranker(),
+            answer_generator=generator,
+        )
+
+        response = service.ask("Candidate", top_k=1)
+
+        self.assertFalse(response.evidence.sufficient)
+        self.assertEqual(generator.calls, 0)
+        self.assertIn("did not provide sufficiently strong evidence", response.answer.summary.text)
+
+    def test_unsafe_generated_output_is_withheld(self) -> None:
+        service = RAGService(
+            VectorIndex(
+                model_name="test-model",
+                chunks=[make_chunk(0)],
+                embeddings=np.ones((1, 2), dtype=np.float32),
+            ),
+            router=KeywordRouter(),
+            reranker=FakeReranker(),
+            answer_generator=UnsafeAnswerGenerator(),
+        )
+
+        response = service.ask("Candidate", top_k=1)
+
+        self.assertTrue(response.evidence.sufficient)
+        self.assertIn("withheld by the output safety policy", response.answer.summary.text)
 
     def test_candidate_count_is_selected_by_search_mode(self) -> None:
         chunks = [make_chunk(index) for index in range(20)]
