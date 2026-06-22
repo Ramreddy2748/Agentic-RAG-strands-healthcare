@@ -106,6 +106,7 @@ Ask a question:
 ```bash
 curl -X POST http://127.0.0.1:8000/ask \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: $RAG_CLIENT_API_KEY" \
   -d '{
     "question": "What are the quality management responsibilities?",
     "search_mode": "auto",
@@ -114,6 +115,106 @@ curl -X POST http://127.0.0.1:8000/ask \
     "generate_answer": true
   }'
 ```
+
+## Security Guardrails
+
+The `/ask` endpoint requires an API key. Generate a strong key:
+
+```bash
+openssl rand -hex 32
+```
+
+Add it to `.env`:
+
+```text
+RAG_API_KEYS=generated_key_here
+```
+
+Set the same value in the client environment:
+
+```bash
+export RAG_CLIENT_API_KEY=generated_key_here
+```
+
+Multiple keys can be accepted during rotation:
+
+```text
+RAG_API_KEYS=current_key,next_key
+```
+
+API keys are compared in constant time and are never included in application
+logs. If `RAG_API_KEYS` is missing, protected requests fail closed with `503`.
+Missing or invalid client keys return `401`. The public `/health` endpoint
+remains unauthenticated for container and load-balancer health checks.
+
+Before routing or retrieval, the API locally rejects common prompt-injection
+techniques, including trusted-instruction overrides, forged model roles,
+system-prompt extraction, credential extraction, and jailbreak language.
+Rejected questions return `prompt_injection_detected` and never enter the RAG
+pipeline or make a Gemini call.
+
+Each authenticated identity is also limited before expensive model work:
+
+```text
+RATE_LIMIT_REQUESTS=5
+RATE_LIMIT_WINDOW_SECONDS=60
+```
+
+Exceeded limits return `429` with a `Retry-After` header. This in-process
+limiter protects one API process. For multiple AWS tasks or replicas, configure
+the same account-wide limit in API Gateway or AWS WAF.
+
+Browser access is disabled unless exact origins are configured:
+
+```text
+CORS_ALLOWED_ORIGINS=https://app.example.org,https://admin.example.org
+```
+
+Wildcard origins are rejected. Restart the API after changing CORS settings.
+
+After retrieval and reranking, the service checks the best evidence score:
+
+```text
+MIN_RERANK_SCORE=0.50
+MIN_SEMANTIC_SCORE=0.35
+MIN_KEYWORD_SCORE=0.01
+```
+
+If evidence is below the applicable threshold, Gemini answer generation is
+skipped and the response reports `evidence_sufficient: false`. Tune thresholds
+using the offline evaluation set before production deployment.
+
+Generated answers are checked for prompt disclosure, credential language, and
+configured secret values. Unsafe output is withheld. Structured logs recursively
+redact questions, authorization fields, credentials, and known secret values
+while retaining request IDs and non-sensitive timing data.
+
+### AWS Authentication
+
+For local development, use:
+
+```text
+AUTH_MODE=api_key
+```
+
+Behind an authenticated AWS API Gateway or trusted reverse proxy, use:
+
+```text
+AUTH_MODE=trusted_proxy
+TRUSTED_PROXY_SECRET=long_internal_secret
+```
+
+The proxy must remove client-supplied `X-Authenticated-User` and
+`X-Proxy-Secret` headers, authenticate the caller, then inject:
+
+```text
+X-Authenticated-User: stable-user-identity
+X-Proxy-Secret: long_internal_secret
+```
+
+Do not expose the container directly to the internet in `trusted_proxy` mode.
+Store `TRUSTED_PROXY_SECRET` and `GOOGLE_API_KEY` in AWS Secrets Manager rather
+than the image or repository.
 
 ## Search the Vector Index
 
@@ -188,6 +289,58 @@ MAX_CONCURRENT_REQUESTS=1
 
 The default concurrency of one protects CPU and memory while shared Torch
 models are running. Increase it only after testing on the target machine.
+
+## Offline Evaluation
+
+Evaluation cases are stored as newline-delimited JSON. Each case can specify
+expected sections and phrases:
+
+```json
+{"case_id":"ic-1","question":"What does IC.1 require?","expected_sections":["IC.1"],"expected_terms":["infection prevention and control program"],"search_mode":"hybrid"}
+```
+
+Run retrieval evaluation without Gemini answer generation:
+
+```bash
+python scripts/evaluate_rag.py --no-rerank
+```
+
+Run the complete pipeline, including reranking and grounded answers:
+
+```bash
+python scripts/evaluate_rag.py --generate-answers
+```
+
+Evaluate whether every answer claim is supported by its cited passages:
+
+```bash
+python scripts/evaluate_rag.py \
+  --no-rerank \
+  --generate-answers \
+  --evaluate-faithfulness
+```
+
+Faithfulness mode uses one answer call and one judge call per question. A shared
+limiter spaces all Gemini requests by at least 15 seconds, runs them
+sequentially, and does not retry failed calls in application code. Cases must
+use manual `semantic`, `keyword`, or `hybrid` modes so routing cannot add hidden
+API requests. Change the interval only when the model's published rate limit
+allows it:
+
+```bash
+python scripts/evaluate_rag.py \
+  --no-rerank \
+  --generate-answers \
+  --evaluate-faithfulness \
+  --api-interval-seconds 15
+```
+
+The command writes `.rag_evaluation/report.json` with section hit rate, mean
+reciprocal rank, section recall, expected-term coverage, citation validity, and
+latency. Faithfulness runs also report fully supported and grounded claim rates,
+plus each unsupported claim and its reason. Failed questions are recorded
+individually without stopping the batch. Generated reports remain local and are
+excluded from Git.
 
 ## Docker
 
