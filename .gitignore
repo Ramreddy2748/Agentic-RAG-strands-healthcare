@@ -6,4 +6,4 @@ __pycache__/
 .DS_Store
 .env
 data/*.pdf
-tests/
+.rag_evaluation/

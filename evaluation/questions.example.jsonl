@@ -1,0 +1,3 @@
+{"case_id":"qm-responsibility","question":"What are the quality management responsibilities?","expected_sections":["QM.1"],"expected_terms":["quality management system","responsible and accountable"],"search_mode":"hybrid"}
+{"case_id":"infection-program","question":"What does IC.1 require?","expected_sections":["IC.1"],"expected_terms":["infection prevention and control program"],"search_mode":"hybrid"}
+{"case_id":"management-representative","question":"Who is responsible for maintaining the QMS?","expected_sections":["QM.4"],"expected_terms":["management representative","senior leadership"],"search_mode":"semantic"}
