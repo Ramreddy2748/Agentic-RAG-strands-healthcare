@@ -10,6 +10,8 @@ from typing import Literal
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, ConfigDict, Field
 
 from rag_chatbot.answer_layer import DEFAULT_ANSWER_MODEL, ClinicalAnswer
@@ -18,10 +20,23 @@ from rag_chatbot.observability import PipelineTimings, new_request_id
 from rag_chatbot.rag_service import RAGResponse, RAGService, RankedResult
 from rag_chatbot.reranking_layer import DEFAULT_RERANKER_MODEL
 from rag_chatbot.routing_layer import DEFAULT_ROUTER_MODEL
+from rag_chatbot.security_layer import (
+    AuthenticatedPrincipal,
+    SlidingWindowRateLimiter,
+    authenticate_principal,
+    configured_cors_origins,
+    configured_api_keys,
+    detect_prompt_injection,
+)
 
 
 SearchMode = Literal["auto", "semantic", "keyword", "hybrid"]
 FallbackMode = Literal["semantic", "keyword", "hybrid"]
+API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
+PROXY_SECRET_HEADER = APIKeyHeader(name="X-Proxy-Secret", auto_error=False)
+PROXY_USER_HEADER = APIKeyHeader(name="X-Authenticated-User", auto_error=False)
+
+load_dotenv()
 
 
 class AskRequest(BaseModel):
@@ -84,6 +99,10 @@ class AskResponse(BaseModel):
     routing_reason: str
     answer: ClinicalAnswer | None
     sources: list[SourceResponse]
+    evidence_sufficient: bool
+    evidence_score: float
+    evidence_threshold: float
+    evidence_reason: str
     stats: RetrievalStatsResponse
     timings: PipelineTimingsResponse
 
@@ -118,6 +137,61 @@ def env_flag(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def require_principal(
+    request: Request,
+    provided_key: str | None = Depends(API_KEY_HEADER),
+    proxy_secret: str | None = Depends(PROXY_SECRET_HEADER),
+    proxy_user: str | None = Depends(PROXY_USER_HEADER),
+) -> AuthenticatedPrincipal:
+    """Authenticate the caller and apply an identity-scoped rate limit."""
+    auth_mode = os.getenv("AUTH_MODE", "api_key").strip().lower()
+    if auth_mode == "api_key" and not configured_api_keys():
+        raise HTTPException(
+            status_code=503,
+            detail="API authentication is not configured.",
+        )
+    if auth_mode == "trusted_proxy" and not os.getenv("TRUSTED_PROXY_SECRET"):
+        raise HTTPException(
+            status_code=503,
+            detail="Trusted proxy authentication is not configured.",
+        )
+    try:
+        principal = authenticate_principal(
+            api_key=provided_key,
+            proxy_secret=proxy_secret,
+            proxy_user=proxy_user,
+            auth_mode=auth_mode,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if principal is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or missing authentication credentials.",
+            headers={"WWW-Authenticate": "ApiKey"},
+        )
+    limiter = getattr(request.app.state, "security_rate_limiter", None)
+    if limiter is None:
+        limiter = build_security_rate_limiter()
+        request.app.state.security_rate_limiter = limiter
+    allowed, retry_after = limiter.check(principal.identifier)
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="Request rate limit exceeded.",
+            headers={"Retry-After": str(retry_after)},
+        )
+    return principal
+
+
+def build_security_rate_limiter() -> SlidingWindowRateLimiter:
+    """Create the configured in-process per-identity limiter."""
+    return SlidingWindowRateLimiter(
+        requests=max(1, int(os.getenv("RATE_LIMIT_REQUESTS", "5"))),
+        window_seconds=max(1.0, float(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"))),
+    )
+
+
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI):
     """Load and warm local models once before accepting API traffic."""
@@ -129,6 +203,7 @@ async def lifespan(app_instance: FastAPI):
     app_instance.state.request_limiter = asyncio.Semaphore(
         max_concurrent_requests
     )
+    app_instance.state.security_rate_limiter = build_security_rate_limiter()
 
     should_preload = env_flag("PRELOAD_MODELS", True)
     if should_preload and get_rag_service not in app_instance.dependency_overrides:
@@ -143,6 +218,18 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+cors_origins = configured_cors_origins()
+if cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=list(cors_origins),
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Content-Type", "X-API-Key", "X-Request-ID"],
+        expose_headers=["X-Request-ID"],
+        max_age=600,
+    )
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -170,11 +257,24 @@ async def ask(
     request: AskRequest,
     http_request: Request,
     http_response: Response,
+    _: AuthenticatedPrincipal = Depends(require_principal),
     service: RAGService = Depends(get_rag_service),
 ) -> AskResponse:
     """Run one question through routing, retrieval, reranking, and answering."""
     request_id = http_request.headers.get("X-Request-ID") or new_request_id()
     http_response.headers["X-Request-ID"] = request_id
+    injection_findings = detect_prompt_injection(request.question)
+    if injection_findings:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "request_id": request_id,
+                "error": (
+                    "The question contains instructions that cannot be processed."
+                ),
+                "code": "prompt_injection_detected",
+            },
+        )
     request_limiter = getattr(http_request.app.state, "request_limiter", None)
     if request_limiter is None:
         request_limiter = asyncio.Semaphore(
@@ -233,6 +333,10 @@ def response_to_api(response: RAGResponse) -> AskResponse:
             result_to_source(rank, result)
             for rank, result in enumerate(response.results, start=1)
         ],
+        evidence_sufficient=response.evidence.sufficient,
+        evidence_score=response.evidence.score,
+        evidence_threshold=response.evidence.threshold,
+        evidence_reason=response.evidence.reason,
         stats=RetrievalStatsResponse(
             semantic_candidates=response.stats.semantic_candidates,
             keyword_candidates=response.stats.keyword_candidates,
