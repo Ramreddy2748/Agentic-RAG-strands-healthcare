@@ -43,6 +43,13 @@ from rag_chatbot.routing_layer import (
     RoutingDecision,
     route_query,
 )
+from rag_chatbot.security_layer import (
+    EvidenceAssessment,
+    assess_output_safety,
+    assess_retrieval_confidence,
+    insufficient_evidence_answer,
+    safe_output_answer,
+)
 
 
 RetrievalResult: TypeAlias = SearchResult | KeywordSearchResult | HybridSearchResult
@@ -77,6 +84,12 @@ class RAGResponse:
     answer: ClinicalAnswer | None
     stats: RetrievalStats
     timings: PipelineTimings
+    evidence: EvidenceAssessment = EvidenceAssessment(
+        sufficient=True,
+        score=1.0,
+        threshold=0.0,
+        reason="Evidence confidence was not explicitly evaluated.",
+    )
 
 
 class RAGService:
@@ -255,12 +268,31 @@ class RAGService:
             reranking_ms = stage_timer.elapsed_ms()
 
             stage_timer = StageTimer()
-            generated_answer = self.answer(
-                question,
+            evidence = assess_retrieval_confidence(
                 results,
-                enabled=generate_answer,
-                top_k=answer_top_k,
+                search_mode=routing.mode,
+                reranked=rerank,
             )
+            generated_answer = None
+            answer_content = None
+            if generate_answer:
+                if evidence.sufficient:
+                    generated_answer = self.answer(
+                        question,
+                        results,
+                        enabled=True,
+                        top_k=answer_top_k,
+                    )
+                    answer_content = (
+                        generated_answer.content if generated_answer else None
+                    )
+                    output_safety = assess_output_safety(answer_content)
+                    if not output_safety.safe:
+                        answer_content = safe_output_answer(
+                            output_safety.reason or "Output safety check failed."
+                        )
+                else:
+                    answer_content = insufficient_evidence_answer(evidence.reason)
             answer_generation_ms = stage_timer.elapsed_ms()
 
             timings = PipelineTimings(
@@ -283,6 +315,7 @@ class RAGService:
                 search_mode=routing.mode,
                 candidate_k=candidate_k,
                 routing_reason=routing.reason,
+                evidence=evidence,
                 stats=stats,
                 timings=timings,
                 sections=[result.chunk.section_title for result in results],
@@ -293,7 +326,8 @@ class RAGService:
                 search_mode=routing.mode,
                 routing_reason=routing.reason,
                 results=results,
-                answer=generated_answer.content if generated_answer else None,
+                answer=answer_content,
+                evidence=evidence,
                 stats=stats,
                 timings=timings,
             )
