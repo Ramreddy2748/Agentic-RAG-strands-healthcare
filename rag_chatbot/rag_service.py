@@ -50,6 +50,13 @@ from rag_chatbot.security_layer import (
     insufficient_evidence_answer,
     safe_output_answer,
 )
+from rag_chatbot.verification_layer import (
+    DEFAULT_VERIFICATION_MODEL,
+    AnswerVerifier,
+    VerificationMetadata,
+    verify_clinical_answer,
+    verification_is_enabled,
+)
 
 
 RetrievalResult: TypeAlias = SearchResult | KeywordSearchResult | HybridSearchResult
@@ -90,6 +97,15 @@ class RAGResponse:
         threshold=0.0,
         reason="Evidence confidence was not explicitly evaluated.",
     )
+    verification: VerificationMetadata = VerificationMetadata(
+        enabled=False,
+        verified=True,
+        confidence=1.0,
+        checked_claims=0,
+        supported_claims=0,
+        removed_claims=0,
+        reason="Verification was not run.",
+    )
 
 
 class RAGService:
@@ -103,9 +119,11 @@ class RAGService:
         router: QueryRouter | None = None,
         reranker: PassageScorer | None = None,
         answer_generator: AnswerGenerator | None = None,
+        verifier: AnswerVerifier | None = None,
         router_model: str = DEFAULT_ROUTER_MODEL,
         reranker_model: str = DEFAULT_RERANKER_MODEL,
         answer_model: str = DEFAULT_ANSWER_MODEL,
+        verification_model: str = DEFAULT_VERIFICATION_MODEL,
     ) -> None:
         self.index = index
         self.keyword_index = BM25Index(index.chunks)
@@ -113,9 +131,11 @@ class RAGService:
         self.router = router
         self.reranker = reranker
         self.answer_generator = answer_generator
+        self.verifier = verifier
         self.router_model = router_model
         self.reranker_model = reranker_model
         self.answer_model = answer_model
+        self.verification_model = verification_model
         self._model_init_lock = Lock()
         self._warmup_lock = Lock()
         self._models_warmed = False
@@ -275,6 +295,7 @@ class RAGService:
             )
             generated_answer = None
             answer_content = None
+            should_verify_answer = False
             if generate_answer:
                 if evidence.sufficient:
                     generated_answer = self.answer(
@@ -291,9 +312,30 @@ class RAGService:
                         answer_content = safe_output_answer(
                             output_safety.reason or "Output safety check failed."
                         )
+                    else:
+                        should_verify_answer = True
                 else:
                     answer_content = insufficient_evidence_answer(evidence.reason)
             answer_generation_ms = stage_timer.elapsed_ms()
+
+            stage_timer = StageTimer()
+            verification = RAGResponse.__dataclass_fields__["verification"].default
+            if (
+                answer_content is not None
+                and generated_answer is not None
+                and should_verify_answer
+            ):
+                verified = verify_clinical_answer(
+                    question=question,
+                    answer=answer_content,
+                    sources=generated_answer.sources,
+                    verifier=self.verifier,
+                    enabled=verification_is_enabled(),
+                    model_name=self.verification_model,
+                )
+                answer_content = verified.answer
+                verification = verified.verification
+            verification_ms = stage_timer.elapsed_ms()
 
             timings = PipelineTimings(
                 routing_ms=routing_ms,
@@ -301,6 +343,7 @@ class RAGService:
                 fusion_ms=fusion_ms,
                 reranking_ms=reranking_ms,
                 answer_generation_ms=answer_generation_ms,
+                verification_ms=verification_ms,
                 total_ms=total_timer.elapsed_ms(),
             )
             stats = RetrievalStats(
@@ -316,6 +359,7 @@ class RAGService:
                 candidate_k=candidate_k,
                 routing_reason=routing.reason,
                 evidence=evidence,
+                verification=verification,
                 stats=stats,
                 timings=timings,
                 sections=[result.chunk.section_title for result in results],
@@ -328,6 +372,7 @@ class RAGService:
                 results=results,
                 answer=answer_content,
                 evidence=evidence,
+                verification=verification,
                 stats=stats,
                 timings=timings,
             )

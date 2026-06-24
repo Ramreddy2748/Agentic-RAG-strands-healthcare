@@ -13,6 +13,7 @@ from rag_chatbot.embedding_layer import VectorIndex
 from rag_chatbot.rag_service import RAGService
 from rag_chatbot.reranking_layer import PassageScorer
 from rag_chatbot.routing_layer import RoutingDecision
+from rag_chatbot.verification_layer import ClaimVerification
 
 from test_reranking_layer import make_chunk
 
@@ -60,7 +61,11 @@ class FakeAnswerGenerator(AnswerGenerator):
             summary=CitedStatement(
                 text="Grounded service answer.",
                 citations=[1],
-            )
+            ),
+            key_requirements=[
+                CitedStatement(text="Supported requirement.", citations=[1]),
+                CitedStatement(text="Unsupported requirement.", citations=[1]),
+            ],
         )
 
 
@@ -85,6 +90,30 @@ class LowScoreReranker(PassageScorer):
         return [0.1 for _ in passages]
 
 
+class FakeVerifier:
+    def verify(self, **kwargs: object) -> list[ClaimVerification]:
+        return [
+            ClaimVerification(
+                claim_id="summary",
+                status="supported",
+                confidence=0.95,
+                reason="Supported by source.",
+            ),
+            ClaimVerification(
+                claim_id="key_requirements.0",
+                status="supported",
+                confidence=0.9,
+                reason="Supported by source.",
+            ),
+            ClaimVerification(
+                claim_id="key_requirements.1",
+                status="unsupported",
+                confidence=0.2,
+                reason="Not supported by source.",
+            ),
+        ]
+
+
 class RAGServiceTests(unittest.TestCase):
     def test_ask_coordinates_keyword_reranking_and_answering(self) -> None:
         index = VectorIndex(
@@ -97,6 +126,7 @@ class RAGServiceTests(unittest.TestCase):
             router=KeywordRouter(),
             reranker=FakeReranker(),
             answer_generator=FakeAnswerGenerator(),
+            verifier=FakeVerifier(),
         )
 
         response = service.ask(
@@ -115,6 +145,16 @@ class RAGServiceTests(unittest.TestCase):
             response.answer.summary.text if response.answer else "",
             "Grounded service answer.",
         )
+        self.assertEqual(
+            [item.text for item in response.answer.key_requirements]
+            if response.answer
+            else [],
+            ["Supported requirement."],
+        )
+        self.assertTrue(response.verification.enabled)
+        self.assertFalse(response.verification.verified)
+        self.assertEqual(response.verification.removed_claims, 1)
+        self.assertGreaterEqual(response.timings.verification_ms, 0)
         self.assertGreaterEqual(response.timings.total_ms, 0)
         self.assertGreaterEqual(response.timings.routing_ms, 0)
 

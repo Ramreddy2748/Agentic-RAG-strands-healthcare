@@ -20,6 +20,7 @@ from rag_chatbot.observability import PipelineTimings, new_request_id
 from rag_chatbot.rag_service import RAGResponse, RAGService, RankedResult
 from rag_chatbot.reranking_layer import DEFAULT_RERANKER_MODEL
 from rag_chatbot.routing_layer import DEFAULT_ROUTER_MODEL
+from rag_chatbot.verification_layer import DEFAULT_VERIFICATION_MODEL
 from rag_chatbot.security_layer import (
     AuthenticatedPrincipal,
     SlidingWindowRateLimiter,
@@ -87,7 +88,22 @@ class PipelineTimingsResponse(BaseModel):
     fusion_ms: float
     reranking_ms: float
     answer_generation_ms: float
+    verification_ms: float
     total_ms: float
+
+
+class VerificationResponse(BaseModel):
+    """Claim-grounding verification metadata for the generated answer."""
+
+    enabled: bool
+    verified: bool
+    confidence: float
+    checked_claims: int
+    supported_claims: int
+    removed_claims: int
+    unclear_claims: int
+    reason: str
+    unsupported_claims: list[str]
 
 
 class AskResponse(BaseModel):
@@ -98,6 +114,7 @@ class AskResponse(BaseModel):
     search_mode: str
     routing_reason: str
     answer: ClinicalAnswer | None
+    verification: VerificationResponse
     sources: list[SourceResponse]
     evidence_sufficient: bool
     evidence_score: float
@@ -126,6 +143,10 @@ def get_rag_service() -> RAGService:
         router_model=os.getenv("ROUTER_MODEL", DEFAULT_ROUTER_MODEL),
         reranker_model=os.getenv("RERANKER_MODEL", DEFAULT_RERANKER_MODEL),
         answer_model=os.getenv("ANSWER_MODEL", DEFAULT_ANSWER_MODEL),
+        verification_model=os.getenv(
+            "VERIFICATION_MODEL",
+            DEFAULT_VERIFICATION_MODEL,
+        ),
     )
 
 
@@ -329,6 +350,17 @@ def response_to_api(response: RAGResponse) -> AskResponse:
         search_mode=response.search_mode,
         routing_reason=response.routing_reason,
         answer=response.answer,
+        verification=VerificationResponse(
+            enabled=response.verification.enabled,
+            verified=response.verification.verified,
+            confidence=response.verification.confidence,
+            checked_claims=response.verification.checked_claims,
+            supported_claims=response.verification.supported_claims,
+            removed_claims=response.verification.removed_claims,
+            unclear_claims=response.verification.unclear_claims,
+            reason=response.verification.reason,
+            unsupported_claims=response.verification.unsupported_claims,
+        ),
         sources=[
             result_to_source(rank, result)
             for rank, result in enumerate(response.results, start=1)
@@ -355,6 +387,7 @@ def timings_to_api(timings: PipelineTimings) -> PipelineTimingsResponse:
         fusion_ms=timings.fusion_ms,
         reranking_ms=timings.reranking_ms,
         answer_generation_ms=timings.answer_generation_ms,
+        verification_ms=timings.verification_ms,
         total_ms=timings.total_ms,
     )
 

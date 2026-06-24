@@ -48,6 +48,7 @@ class FakeRAGService:
                 fusion_ms=0.1,
                 reranking_ms=3.0,
                 answer_generation_ms=4.0,
+                verification_ms=0.5,
                 total_ms=10.1,
             ),
         )
@@ -100,6 +101,8 @@ class APITests(unittest.TestCase):
         self.assertEqual(payload["sources"][0]["section_title"], "QM.1 TEST")
         self.assertEqual(payload["sources"][0]["vector_score"], 0.8)
         self.assertEqual(payload["timings"]["total_ms"], 10.1)
+        self.assertEqual(payload["timings"]["verification_ms"], 0.5)
+        self.assertFalse(payload["verification"]["enabled"])
         self.assertTrue(payload["evidence_sufficient"])
         self.assertEqual(response.headers["x-request-id"], payload["request_id"])
 

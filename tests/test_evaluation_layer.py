@@ -206,6 +206,7 @@ def make_response(
             fusion_ms=1.0,
             reranking_ms=90.0,
             answer_generation_ms=9.0,
+            verification_ms=0.0,
             total_ms=125.0,
         ),
     )

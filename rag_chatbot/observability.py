@@ -23,6 +23,7 @@ class PipelineTimings:
     fusion_ms: float
     reranking_ms: float
     answer_generation_ms: float
+    verification_ms: float
     total_ms: float
 
 
