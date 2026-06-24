@@ -19,6 +19,7 @@ PDF
   -> reciprocal-rank fusion
   -> BGE reranking
   -> grounded Gemini answer with citations
+  -> Strands verification agent
   -> RAGService structured response
 ```
 
@@ -31,6 +32,12 @@ default, chunks contain up to 900 words with 150 words of overlap.
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e .
+```
+
+Install the optional Strands agent dependency when running answer verification:
+
+```bash
+python -m pip install -e '.[strands]'
 ```
 
 Place the source PDF in `data/`. PDFs, generated embeddings, and environment
@@ -257,6 +264,50 @@ The answer is returned in a clinician-friendly structure:
 
 Citation numbers map directly to the authoritative metadata in `sources`.
 
+## Strands Verification Layer
+
+When `ENABLE_VERIFICATION=true`, the generated clinical answer is passed to a
+Strands verification agent before it is returned. The agent receives only:
+
+```text
+the user question
+the generated answer claims
+the retrieved source chunks cited by those claims
+```
+
+It checks each claim against its cited source text, marks claims as supported,
+unsupported, or unclear, strips unsupported or unclear optional claims, and
+returns verification metadata:
+
+```json
+{
+  "verification": {
+    "enabled": true,
+    "verified": false,
+    "confidence": 0.84,
+    "checked_claims": 5,
+    "supported_claims": 4,
+    "removed_claims": 1,
+    "unclear_claims": 0,
+    "reason": "Removed 1 unsupported claim(s).",
+    "unsupported_claims": ["Unsupported claim text"]
+  }
+}
+```
+
+This adds one extra agent/LLM call per generated answer. For retrieval-only or
+low-cost local tests, set:
+
+```text
+ENABLE_VERIFICATION=false
+```
+
+For Docker builds that include Strands:
+
+```bash
+docker build --build-arg INSTALL_STRANDS=true -t agentic-healthcare-rag .
+```
+
 ## Observability
 
 Every query includes a request ID, candidate counts, and stage timings:
@@ -270,7 +321,8 @@ Every query includes a request ID, candidate counts, and stage timings:
     "fusion_ms": 0.08,
     "reranking_ms": 8400.2,
     "answer_generation_ms": 1800.5,
-    "total_ms": 12721.28
+    "verification_ms": 920.0,
+    "total_ms": 13641.28
   }
 }
 ```
@@ -354,6 +406,14 @@ Build the image:
 
 ```bash
 docker build -t agentic-healthcare-rag:local .
+```
+
+Build with the optional Strands verifier dependency:
+
+```bash
+docker build \
+  --build-arg INSTALL_STRANDS=true \
+  -t agentic-healthcare-rag:local .
 ```
 
 Run it directly:

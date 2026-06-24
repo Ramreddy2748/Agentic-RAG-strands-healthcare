@@ -1,11 +1,14 @@
 FROM python:3.12-slim
 
+ARG INSTALL_STRANDS=false
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     HF_HOME=/home/appuser/.cache/huggingface \
     RAG_INDEX_DIR=/app/.rag_index \
     PRELOAD_MODELS=true \
+    ENABLE_VERIFICATION=false \
     MAX_CONCURRENT_REQUESTS=1 \
     LOG_LEVEL=INFO
 
@@ -20,7 +23,11 @@ COPY rag_chatbot ./rag_chatbot
 COPY scripts ./scripts
 
 RUN python -m pip install --upgrade pip \
-    && python -m pip install .
+    && if [ "$INSTALL_STRANDS" = "true" ]; then \
+        python -m pip install ".[strands]"; \
+    else \
+        python -m pip install .; \
+    fi
 
 RUN useradd --create-home --uid 10001 appuser \
     && mkdir -p /app/.rag_index "${HF_HOME}" \
