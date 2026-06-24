@@ -6,8 +6,10 @@ from rag_chatbot.answer_layer import (
     CitedStatement,
     ClinicalAnswer,
     build_answer_prompt,
+    extract_inline_citations,
     generate_grounded_answer,
     normalize_clinical_answer,
+    prepare_cited_answer,
     validate_citations,
 )
 from rag_chatbot.embedding_layer import SearchResult
@@ -80,6 +82,42 @@ class AnswerLayerTests(unittest.TestCase):
 
         self.assertEqual(normalized.summary.text, "Maintain the QMS.")
         self.assertEqual(normalized.summary.citations, [1, 2])
+
+    def test_extracts_inline_source_citations_into_metadata(self) -> None:
+        answer = ClinicalAnswer(
+            summary=CitedStatement(
+                text="Maintain infection prevention oversight [Source 2].",
+                citations=[],
+            )
+        )
+
+        normalized = normalize_clinical_answer(answer)
+
+        self.assertEqual(
+            normalized.summary.text,
+            "Maintain infection prevention oversight.",
+        )
+        self.assertEqual(normalized.summary.citations, [2])
+        self.assertEqual(extract_inline_citations("Use [1] and (Source 3)."), [1, 3])
+
+    def test_prepare_cited_answer_drops_uncited_optional_statements(self) -> None:
+        answer = ClinicalAnswer(
+            summary=CitedStatement(text="Summary without citation.", citations=[]),
+            key_requirements=[
+                CitedStatement(text="Cited requirement.", citations=[1]),
+                CitedStatement(text="Uncited requirement.", citations=[]),
+            ],
+            clinical_actions=[
+                CitedStatement(text="Uncited action.", citations=[]),
+            ],
+        )
+
+        prepared = prepare_cited_answer(answer, source_count=2)
+
+        self.assertEqual(prepared.summary.citations, [1, 2])
+        self.assertEqual(len(prepared.key_requirements), 1)
+        self.assertEqual(prepared.key_requirements[0].text, "Cited requirement.")
+        self.assertEqual(prepared.clinical_actions, [])
 
 
 if __name__ == "__main__":

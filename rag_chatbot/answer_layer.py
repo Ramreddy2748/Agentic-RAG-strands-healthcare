@@ -149,7 +149,10 @@ def generate_grounded_answer(
 
     prompt = build_answer_prompt(query, sources)
     active_generator = generator or GeminiAnswerGenerator(model_name)
-    content = active_generator.generate(prompt)
+    content = prepare_cited_answer(
+        active_generator.generate(prompt),
+        source_count=len(sources),
+    )
     validate_citations(content, source_count=len(sources))
     return GeneratedAnswer(
         content=content,
@@ -212,6 +215,39 @@ def validate_citations(answer: ClinicalAnswer, *, source_count: int) -> None:
             raise ValueError(f"Answer contains invalid source citations: {invalid}")
 
 
+def prepare_cited_answer(
+    answer: ClinicalAnswer,
+    *,
+    source_count: int,
+) -> ClinicalAnswer:
+    """Normalize and repair citation metadata before strict validation."""
+    normalized = normalize_clinical_answer(answer)
+    summary = normalized.summary
+    if source_count > 0 and not summary.citations:
+        summary = CitedStatement(
+            text=(
+                "The retrieved accreditation passages contain relevant evidence, "
+                "but the generated summary did not provide valid citation metadata."
+            ),
+            citations=list(range(1, source_count + 1)),
+        )
+
+    return ClinicalAnswer(
+        summary=summary,
+        key_requirements=[
+            statement
+            for statement in normalized.key_requirements
+            if statement.citations or source_count == 0
+        ],
+        clinical_actions=[
+            statement
+            for statement in normalized.clinical_actions
+            if statement.citations or source_count == 0
+        ],
+        limitations=normalized.limitations,
+    )
+
+
 def normalize_clinical_answer(answer: ClinicalAnswer) -> ClinicalAnswer:
     """Remove redundant inline source numbers from structured statement text."""
     return ClinicalAnswer(
@@ -230,12 +266,31 @@ def normalize_clinical_answer(answer: ClinicalAnswer) -> ClinicalAnswer:
 
 def normalize_statement(statement: CitedStatement) -> CitedStatement:
     """Keep citations in metadata instead of duplicating them in prose."""
+    citations = sorted(
+        set(statement.citations + extract_inline_citations(statement.text))
+    )
     text = re.sub(
-        r"\s*\((?:\d+\s*(?:,\s*\d+\s*)*)\)(?=[.,;:]|$)",
+        r"\s*(?:\[(?:Source\s*)?\d+(?:\s*,\s*(?:Source\s*)?\d+)*\]|\((?:Source\s*)?\d+(?:\s*,\s*(?:Source\s*)?\d+)*\))(?=[.,;:]|$)",
         "",
         statement.text,
+        flags=re.IGNORECASE,
     )
     return CitedStatement(
         text=text.strip(),
-        citations=statement.citations,
+        citations=citations,
     )
+
+
+def extract_inline_citations(text: str) -> list[int]:
+    """Read citation numbers Gemini may have placed in prose by mistake."""
+    citations: list[int] = []
+    for match in re.finditer(
+        r"(?:\[|\()((?:Source\s*)?\d+(?:\s*,\s*(?:Source\s*)?\d+)*)(?:\]|\))",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        citations.extend(
+            int(number)
+            for number in re.findall(r"\d+", match.group(1))
+        )
+    return citations
