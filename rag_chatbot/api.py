@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from rag_chatbot.answer_layer import DEFAULT_ANSWER_MODEL, ClinicalAnswer
 from rag_chatbot.embedding_layer import DEFAULT_INDEX_DIR
+from rag_chatbot.index_storage import ensure_index_available, index_is_available
 from rag_chatbot.observability import PipelineTimings, new_request_id
 from rag_chatbot.rag_service import RAGResponse, RAGService, RankedResult
 from rag_chatbot.reranking_layer import DEFAULT_RERANKER_MODEL
@@ -226,6 +227,14 @@ async def lifespan(app_instance: FastAPI):
     )
     app_instance.state.security_rate_limiter = build_security_rate_limiter()
 
+    index_dir = Path(os.getenv("RAG_INDEX_DIR", str(DEFAULT_INDEX_DIR)))
+    if get_rag_service not in app_instance.dependency_overrides:
+        await run_in_threadpool(
+            ensure_index_available,
+            index_dir,
+            region=os.getenv("AWS_REGION"),
+        )
+
     should_preload = env_flag("PRELOAD_MODELS", True)
     if should_preload and get_rag_service not in app_instance.dependency_overrides:
         service = get_rag_service()
@@ -257,10 +266,7 @@ if cors_origins:
 def health() -> HealthResponse:
     """Report whether the API process can see the persisted index."""
     index_dir = Path(os.getenv("RAG_INDEX_DIR", str(DEFAULT_INDEX_DIR)))
-    index_available = (
-        (index_dir / "metadata.json").exists()
-        and (index_dir / "embeddings.npz").exists()
-    )
+    index_available = index_is_available(index_dir)
     return HealthResponse(
         status="ok" if index_available else "degraded",
         index_dir=str(index_dir),

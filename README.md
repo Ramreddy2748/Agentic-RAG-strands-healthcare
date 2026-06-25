@@ -452,6 +452,37 @@ Do not copy `.env`, PDFs, `.rag_index`, or model caches into the image. In AWS,
 the same container can receive secrets from Secrets Manager and the index from
 S3 or a mounted volume.
 
+## AWS Index Bootstrap
+
+For ECS/Fargate, upload the generated index to S3:
+
+```bash
+aws s3 sync .rag_index s3://agentic-healthcare-rag-index/rag-index/ \
+  --region us-east-1
+```
+
+The container checks `RAG_INDEX_DIR` during startup. If `metadata.json` and
+`embeddings.npz` are missing locally and `INDEX_S3_BUCKET` is set, it downloads
+both files from S3 before loading the RAG service.
+
+Use these ECS environment variables:
+
+```text
+RAG_INDEX_DIR=/app/.rag_index
+INDEX_S3_BUCKET=agentic-healthcare-rag-index
+INDEX_S3_PREFIX=rag-index
+AWS_REGION=us-east-1
+```
+
+The ECS task role needs:
+
+```text
+s3:GetObject on arn:aws:s3:::agentic-healthcare-rag-index/rag-index/*
+```
+
+Local development can keep using the mounted `.rag_index` directory and leave
+`INDEX_S3_BUCKET` empty.
+
 ## Continuous Integration
 
 GitHub Actions runs automatically on pushes and pull requests targeting `main`.
