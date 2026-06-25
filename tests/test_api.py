@@ -83,6 +83,14 @@ class APITests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("index_available", response.json())
 
+    def test_index_page_serves_browser_ui(self) -> None:
+        response = self.client.get("/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/html", response.headers["content-type"])
+        self.assertIn("Healthcare Accreditation RAG", response.text)
+        self.assertIn('id="ask-form"', response.text)
+
     def test_ask_returns_structured_answer_and_sources(self) -> None:
         response = self.client.post(
             "/ask",

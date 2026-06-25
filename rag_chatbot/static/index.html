@@ -1,0 +1,520 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Healthcare RAG</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --ink: #17202a;
+      --muted: #627082;
+      --line: #d8dee7;
+      --accent: #0f766e;
+      --accent-dark: #115e59;
+      --danger: #b42318;
+      --soft: #eef7f6;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.45;
+    }
+
+    header {
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+
+    .shell {
+      width: min(1180px, calc(100% - 32px));
+      margin: 0 auto;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 18px 0;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+
+    .status {
+      color: var(--muted);
+      font-size: 14px;
+      white-space: nowrap;
+    }
+
+    main {
+      padding: 24px 0 40px;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(300px, 420px) 1fr;
+      gap: 18px;
+      align-items: start;
+    }
+
+    section,
+    aside {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+
+    form {
+      padding: 18px;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 7px;
+      color: #2b3645;
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    textarea,
+    input,
+    select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #ffffff;
+      color: var(--ink);
+      font: inherit;
+      font-size: 14px;
+      outline: none;
+    }
+
+    textarea:focus,
+    input:focus,
+    select:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.14);
+    }
+
+    textarea {
+      min-height: 132px;
+      padding: 11px 12px;
+      resize: vertical;
+    }
+
+    input,
+    select {
+      height: 38px;
+      padding: 0 10px;
+    }
+
+    .field {
+      margin-bottom: 14px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .checks {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin: 2px 0 16px;
+    }
+
+    .check {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 38px;
+      padding: 0 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      color: #2b3645;
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .check input {
+      width: 16px;
+      height: 16px;
+      padding: 0;
+      accent-color: var(--accent);
+    }
+
+    button {
+      width: 100%;
+      height: 42px;
+      border: 0;
+      border-radius: 6px;
+      background: var(--accent);
+      color: white;
+      font: inherit;
+      font-weight: 750;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background: var(--accent-dark);
+    }
+
+    button:disabled {
+      cursor: progress;
+      opacity: 0.68;
+    }
+
+    .result {
+      min-height: 520px;
+      padding: 18px;
+    }
+
+    .empty {
+      height: 480px;
+      display: grid;
+      place-items: center;
+      color: var(--muted);
+      text-align: center;
+      border: 1px dashed var(--line);
+      border-radius: 8px;
+      background: #fbfcfd;
+    }
+
+    .answer-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    h2,
+    h3 {
+      margin: 0;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      font-size: 18px;
+    }
+
+    h3 {
+      margin-top: 18px;
+      margin-bottom: 8px;
+      font-size: 15px;
+    }
+
+    .pill-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 8px 0 14px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 26px;
+      padding: 3px 9px;
+      border-radius: 999px;
+      background: var(--soft);
+      color: var(--accent-dark);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .statement {
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      margin-bottom: 8px;
+      background: #ffffff;
+    }
+
+    .statement p {
+      margin: 0;
+    }
+
+    .citations {
+      margin-top: 7px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .source {
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      margin-bottom: 10px;
+      background: #fbfcfd;
+    }
+
+    .source-title {
+      font-weight: 750;
+      margin-bottom: 5px;
+    }
+
+    .source-meta,
+    .timing {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .source-text {
+      margin-top: 8px;
+      max-height: 140px;
+      overflow: auto;
+      color: #2b3645;
+      font-size: 13px;
+    }
+
+    .error {
+      padding: 12px;
+      border: 1px solid #f3b8b3;
+      border-radius: 8px;
+      color: var(--danger);
+      background: #fff4f2;
+      font-weight: 650;
+    }
+
+    @media (max-width: 860px) {
+      .layout {
+        grid-template-columns: 1fr;
+      }
+
+      .grid,
+      .checks {
+        grid-template-columns: 1fr;
+      }
+
+      .status {
+        display: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="shell topbar">
+      <h1>Healthcare Accreditation RAG</h1>
+      <div class="status" id="status">Ready</div>
+    </div>
+  </header>
+
+  <main class="shell">
+    <div class="layout">
+      <aside>
+        <form id="ask-form">
+          <div class="field">
+            <label for="api-key">API key</label>
+            <input id="api-key" name="apiKey" type="password" autocomplete="off" value="">
+          </div>
+
+          <div class="field">
+            <label for="question">Question</label>
+            <textarea id="question" name="question">What does IC.1 require?</textarea>
+          </div>
+
+          <div class="grid">
+            <div class="field">
+              <label for="search-mode">Search</label>
+              <select id="search-mode" name="searchMode">
+                <option value="auto">auto</option>
+                <option value="keyword">keyword</option>
+                <option value="semantic">semantic</option>
+                <option value="hybrid" selected>hybrid</option>
+              </select>
+            </div>
+
+            <div class="field">
+              <label for="quality-mode">Quality</label>
+              <select id="quality-mode" name="qualityMode">
+                <option value="fast" selected>fast</option>
+                <option value="balanced">balanced</option>
+                <option value="strict">strict</option>
+              </select>
+            </div>
+
+            <div class="field">
+              <label for="top-k">Sources</label>
+              <input id="top-k" name="topK" type="number" min="1" max="10" value="3">
+            </div>
+          </div>
+
+          <div class="checks">
+            <label class="check" for="rerank">
+              <input id="rerank" name="rerank" type="checkbox" checked>
+              Rerank
+            </label>
+            <label class="check" for="generate-answer">
+              <input id="generate-answer" name="generateAnswer" type="checkbox" checked>
+              Answer
+            </label>
+          </div>
+
+          <button id="submit" type="submit">Ask</button>
+        </form>
+      </aside>
+
+      <section class="result" id="result">
+        <div class="empty">Ask a question to see the grounded answer and source passages.</div>
+      </section>
+    </div>
+  </main>
+
+  <script>
+    const form = document.getElementById("ask-form");
+    const result = document.getElementById("result");
+    const submit = document.getElementById("submit");
+    const statusText = document.getElementById("status");
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const data = new FormData(form);
+      const apiKey = String(data.get("apiKey") || "").trim();
+      const payload = {
+        question: String(data.get("question") || "").trim(),
+        search_mode: data.get("searchMode"),
+        quality_mode: data.get("qualityMode"),
+        top_k: Number(data.get("topK") || 3),
+        rerank: data.get("rerank") === "on",
+        generate_answer: data.get("generateAnswer") === "on"
+      };
+
+      submit.disabled = true;
+      submit.textContent = "Running...";
+      statusText.textContent = "Running request";
+      result.innerHTML = '<div class="empty">Searching the indexed accreditation document...</div>';
+
+      try {
+        const response = await fetch("/ask", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-API-Key": apiKey
+          },
+          body: JSON.stringify(payload)
+        });
+        const body = await response.json();
+        if (!response.ok) {
+          throw new Error(formatError(body));
+        }
+        renderResponse(body);
+        statusText.textContent = `Done in ${(body.timings.total_ms / 1000).toFixed(1)}s`;
+      } catch (error) {
+        result.innerHTML = `<div class="error">${escapeHtml(error.message)}</div>`;
+        statusText.textContent = "Request failed";
+      } finally {
+        submit.disabled = false;
+        submit.textContent = "Ask";
+      }
+    });
+
+    function renderResponse(body) {
+      const answer = body.answer;
+      const summary = answer ? statementHtml(answer.summary) : "";
+      const requirements = answer ? listHtml(answer.key_requirements) : "";
+      const actions = answer ? listHtml(answer.clinical_actions) : "";
+      const sources = body.sources.map(sourceHtml).join("");
+
+      result.innerHTML = `
+        <div class="answer-header">
+          <h2>Answer</h2>
+          <div class="timing">${escapeHtml(body.request_id)}</div>
+        </div>
+        <div class="pill-row">
+          <span class="pill">${escapeHtml(body.search_mode)}</span>
+          <span class="pill">${escapeHtml(body.quality_mode)}</span>
+          <span class="pill">${body.evidence_sufficient ? "evidence ok" : "low evidence"}</span>
+          <span class="pill">${escapeHtml(body.timings.total_ms.toFixed(0))} ms</span>
+        </div>
+        ${summary || '<div class="statement"><p>No generated answer returned.</p></div>'}
+        ${requirements ? `<h3>Key Requirements</h3>${requirements}` : ""}
+        ${actions ? `<h3>Clinical Actions</h3>${actions}` : ""}
+        ${answer && answer.limitations ? `<h3>Limitations</h3><div class="statement"><p>${escapeHtml(answer.limitations)}</p></div>` : ""}
+        <h3>Verification</h3>
+        <div class="statement">
+          <p>${escapeHtml(body.verification.reason)}</p>
+          <div class="citations">enabled: ${body.verification.enabled} · removed: ${body.verification.removed_claims} · confidence: ${body.verification.confidence}</div>
+        </div>
+        <h3>Timings</h3>
+        <div class="statement">
+          <div class="timing">
+            retrieval ${body.timings.retrieval_ms} ms · rerank ${body.timings.reranking_ms} ms · answer ${body.timings.answer_generation_ms} ms · verify ${body.timings.verification_ms} ms
+          </div>
+        </div>
+        <h3>Sources</h3>
+        ${sources}
+      `;
+    }
+
+    function listHtml(items) {
+      return (items || []).map(statementHtml).join("");
+    }
+
+    function statementHtml(statement) {
+      const citations = (statement.citations || []).map((item) => `[${item}]`).join(" ");
+      return `
+        <div class="statement">
+          <p>${escapeHtml(statement.text)}</p>
+          ${citations ? `<div class="citations">${citations}</div>` : ""}
+        </div>
+      `;
+    }
+
+    function sourceHtml(source) {
+      return `
+        <div class="source">
+          <div class="source-title">[${source.rank}] ${escapeHtml(source.section_title)}</div>
+          <div class="source-meta">pages ${source.page_number}-${source.end_page_number} · retrieval ${formatScore(source.retrieval_score)} · rerank ${formatScore(source.rerank_score)}</div>
+          <div class="source-text">${escapeHtml(source.text)}</div>
+        </div>
+      `;
+    }
+
+    function formatScore(score) {
+      if (score === null || score === undefined) {
+        return "n/a";
+      }
+      return Number(score).toFixed(4);
+    }
+
+    function formatError(body) {
+      if (body && body.detail && body.detail.error) {
+        return body.detail.error;
+      }
+      if (body && body.detail) {
+        return typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
+      }
+      return "Request failed";
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+  </script>
+</body>
+</html>

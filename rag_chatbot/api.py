@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -40,6 +41,7 @@ PROXY_SECRET_HEADER = APIKeyHeader(name="X-Proxy-Secret", auto_error=False)
 PROXY_USER_HEADER = APIKeyHeader(name="X-Authenticated-User", auto_error=False)
 
 load_dotenv()
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
 class AskRequest(BaseModel):
@@ -280,6 +282,12 @@ def health() -> HealthResponse:
             int(os.getenv("MAX_CONCURRENT_REQUESTS", "1")),
         ),
     )
+
+
+@app.get("/", response_class=HTMLResponse, include_in_schema=False)
+def index_page() -> HTMLResponse:
+    """Serve the small browser UI for asking RAG questions."""
+    return HTMLResponse((STATIC_DIR / "index.html").read_text(encoding="utf-8"))
 
 
 @app.post("/ask", response_model=AskResponse)
