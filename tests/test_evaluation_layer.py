@@ -190,6 +190,7 @@ def make_response(
     return RAGResponse(
         request_id="evaluation-test",
         question="Test question",
+        quality_mode="balanced",
         search_mode="hybrid",
         routing_reason="Test route",
         results=results,

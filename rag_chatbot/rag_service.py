@@ -68,6 +68,56 @@ SEARCH_MODE_CANDIDATE_COUNTS = {
     "hybrid": 12,
 }
 
+QUALITY_MODES = {"fast", "balanced", "strict"}
+
+
+@dataclass(frozen=True)
+class QualitySettings:
+    """Runtime controls for speed versus answer confidence."""
+
+    candidate_counts: dict[str, int]
+    rerank: bool
+    reranker_batch_size: int
+    reranker_max_length: int
+    answer_top_k: int
+    verification_enabled: bool
+
+
+QUALITY_MODE_SETTINGS = {
+    "fast": QualitySettings(
+        candidate_counts={
+            "keyword": 3,
+            "semantic": 5,
+            "hybrid": 6,
+        },
+        rerank=False,
+        reranker_batch_size=2,
+        reranker_max_length=256,
+        answer_top_k=2,
+        verification_enabled=False,
+    ),
+    "balanced": QualitySettings(
+        candidate_counts=SEARCH_MODE_CANDIDATE_COUNTS,
+        rerank=True,
+        reranker_batch_size=2,
+        reranker_max_length=512,
+        answer_top_k=3,
+        verification_enabled=True,
+    ),
+    "strict": QualitySettings(
+        candidate_counts={
+            "keyword": 8,
+            "semantic": 10,
+            "hybrid": 14,
+        },
+        rerank=True,
+        reranker_batch_size=1,
+        reranker_max_length=512,
+        answer_top_k=3,
+        verification_enabled=True,
+    ),
+}
+
 
 @dataclass(frozen=True)
 class RetrievalStats:
@@ -85,6 +135,7 @@ class RAGResponse:
 
     request_id: str
     question: str
+    quality_mode: str
     search_mode: str
     routing_reason: str
     results: list[RankedResult]
@@ -211,6 +262,7 @@ class RAGService:
         question: str,
         *,
         search_mode: str = "auto",
+        quality_mode: str = "balanced",
         router_fallback: str = "hybrid",
         top_k: int = 3,
         embedding_batch_size: int = 8,
@@ -228,8 +280,14 @@ class RAGService:
             raise ValueError("question cannot be empty")
         if search_mode not in {"auto", "semantic", "keyword", "hybrid"}:
             raise ValueError(f"Invalid search mode: {search_mode}")
+        if quality_mode not in QUALITY_MODES:
+            raise ValueError(f"Invalid quality mode: {quality_mode}")
         if top_k < 1:
             raise ValueError("top_k must be at least 1")
+
+        quality = QUALITY_MODE_SETTINGS[quality_mode]
+        effective_rerank = rerank and quality.rerank
+        effective_answer_top_k = min(answer_top_k, quality.answer_top_k)
 
         active_request_id = request_id or new_request_id()
         total_timer = StageTimer()
@@ -237,8 +295,9 @@ class RAGService:
             "rag_request_started",
             request_id=active_request_id,
             search_mode_requested=search_mode,
+            quality_mode=quality_mode,
             top_k=top_k,
-            rerank=rerank,
+            rerank=effective_rerank,
             generate_answer=generate_answer,
         )
 
@@ -250,7 +309,7 @@ class RAGService:
                 fallback_mode=router_fallback,
             )
             routing_ms = stage_timer.elapsed_ms()
-            candidate_k = SEARCH_MODE_CANDIDATE_COUNTS[routing.mode]
+            candidate_k = quality.candidate_counts[routing.mode]
             if top_k > candidate_k:
                 raise ValueError(
                     f"top_k cannot exceed {candidate_k} for {routing.mode} search"
@@ -281,9 +340,9 @@ class RAGService:
                 question,
                 candidates,
                 top_k=top_k,
-                rerank=rerank,
-                batch_size=reranker_batch_size,
-                max_length=reranker_max_length,
+                rerank=effective_rerank,
+                batch_size=min(reranker_batch_size, quality.reranker_batch_size),
+                max_length=min(reranker_max_length, quality.reranker_max_length),
             )
             reranking_ms = stage_timer.elapsed_ms()
 
@@ -291,7 +350,7 @@ class RAGService:
             evidence = assess_retrieval_confidence(
                 results,
                 search_mode=routing.mode,
-                reranked=rerank,
+                reranked=effective_rerank,
             )
             generated_answer = None
             answer_content = None
@@ -302,7 +361,7 @@ class RAGService:
                         question,
                         results,
                         enabled=True,
-                        top_k=answer_top_k,
+                        top_k=effective_answer_top_k,
                     )
                     answer_content = (
                         generated_answer.content if generated_answer else None
@@ -330,7 +389,10 @@ class RAGService:
                     answer=answer_content,
                     sources=generated_answer.sources,
                     verifier=self.verifier,
-                    enabled=verification_is_enabled(),
+                    enabled=(
+                        quality.verification_enabled
+                        and verification_is_enabled()
+                    ),
                     model_name=self.verification_model,
                 )
                 answer_content = verified.answer
@@ -355,6 +417,7 @@ class RAGService:
             log_event(
                 "rag_request_completed",
                 request_id=active_request_id,
+                quality_mode=quality_mode,
                 search_mode=routing.mode,
                 candidate_k=candidate_k,
                 routing_reason=routing.reason,
@@ -367,6 +430,7 @@ class RAGService:
             return RAGResponse(
                 request_id=active_request_id,
                 question=question,
+                quality_mode=quality_mode,
                 search_mode=routing.mode,
                 routing_reason=routing.reason,
                 results=results,

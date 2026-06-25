@@ -120,6 +120,7 @@ curl -X POST http://127.0.0.1:8000/ask \
   -d '{
     "question": "What are the quality management responsibilities?",
     "search_mode": "auto",
+    "quality_mode": "balanced",
     "top_k": 3,
     "rerank": true,
     "generate_answer": true
@@ -246,6 +247,22 @@ keyword  -> 5 candidates
 semantic -> 8 candidates
 hybrid   -> 12 candidates
 ```
+
+The API also supports `quality_mode` to trade speed for confidence:
+
+```text
+fast:
+  fewer candidates, no reranker, no verification
+
+balanced:
+  default candidates, reranker on, verification on
+
+strict:
+  more candidates, reranker on, verification on
+```
+
+Use `fast` for quick local exploration and `strict` for slower compliance-style
+answers where stronger grounding is worth the latency.
 
 The answer is returned in a clinician-friendly structure:
 

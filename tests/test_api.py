@@ -24,6 +24,7 @@ class FakeRAGService:
         return RAGResponse(
             request_id=str(kwargs.get("request_id", "fake-request")),
             question=question,
+            quality_mode=str(kwargs.get("quality_mode", "balanced")),
             search_mode="keyword",
             routing_reason="Exact requirement code.",
             results=[SearchResult(score=0.8, chunk=make_chunk(0))],
@@ -96,6 +97,7 @@ class APITests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload["search_mode"], "keyword")
+        self.assertEqual(payload["quality_mode"], "balanced")
         self.assertEqual(payload["answer"]["summary"]["text"], "Grounded API answer.")
         self.assertEqual(payload["answer"]["summary"]["citations"], [1])
         self.assertEqual(payload["sources"][0]["section_title"], "QM.1 TEST")

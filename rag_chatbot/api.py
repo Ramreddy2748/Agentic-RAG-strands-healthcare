@@ -34,6 +34,7 @@ from rag_chatbot.security_layer import (
 
 SearchMode = Literal["auto", "semantic", "keyword", "hybrid"]
 FallbackMode = Literal["semantic", "keyword", "hybrid"]
+QualityMode = Literal["fast", "balanced", "strict"]
 API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
 PROXY_SECRET_HEADER = APIKeyHeader(name="X-Proxy-Secret", auto_error=False)
 PROXY_USER_HEADER = APIKeyHeader(name="X-Authenticated-User", auto_error=False)
@@ -48,6 +49,7 @@ class AskRequest(BaseModel):
 
     question: str = Field(min_length=1, max_length=2000)
     search_mode: SearchMode = "auto"
+    quality_mode: QualityMode = "balanced"
     router_fallback: FallbackMode = "hybrid"
     top_k: int = Field(default=3, ge=1, le=10)
     rerank: bool = True
@@ -112,6 +114,7 @@ class AskResponse(BaseModel):
 
     request_id: str
     question: str
+    quality_mode: str
     search_mode: str
     routing_reason: str
     answer: ClinicalAnswer | None
@@ -314,6 +317,7 @@ async def ask(
                 service.ask,
                 request.question,
                 search_mode=request.search_mode,
+                quality_mode=request.quality_mode,
                 router_fallback=request.router_fallback,
                 top_k=request.top_k,
                 rerank=request.rerank,
@@ -353,6 +357,7 @@ def response_to_api(response: RAGResponse) -> AskResponse:
     return AskResponse(
         request_id=response.request_id,
         question=response.question,
+        quality_mode=response.quality_mode,
         search_mode=response.search_mode,
         routing_reason=response.routing_reason,
         answer=response.answer,

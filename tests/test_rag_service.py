@@ -137,6 +137,7 @@ class RAGServiceTests(unittest.TestCase):
         )
 
         self.assertEqual(response.request_id, "test-request")
+        self.assertEqual(response.quality_mode, "balanced")
         self.assertEqual(response.search_mode, "keyword")
         self.assertEqual(response.stats.semantic_candidates, 0)
         self.assertEqual(response.stats.keyword_candidates, 3)
@@ -251,6 +252,34 @@ class RAGServiceTests(unittest.TestCase):
         self.assertEqual(hybrid.stats.semantic_candidates, 12)
         self.assertEqual(hybrid.stats.keyword_candidates, 12)
         self.assertEqual(hybrid.stats.fused_candidates, 12)
+
+    def test_fast_quality_mode_reduces_work_and_skips_verification(self) -> None:
+        chunks = [make_chunk(index) for index in range(20)]
+        service = RAGService(
+            VectorIndex(
+                model_name="test-model",
+                chunks=chunks,
+                embeddings=np.ones((20, 2), dtype=np.float32),
+            ),
+            embedder=FakeEmbedder(),
+            reranker=FakeReranker(),
+            answer_generator=FakeAnswerGenerator(),
+            verifier=FakeVerifier(),
+        )
+
+        response = service.ask(
+            "Candidate",
+            search_mode="hybrid",
+            quality_mode="fast",
+            top_k=3,
+        )
+
+        self.assertEqual(response.quality_mode, "fast")
+        self.assertEqual(response.stats.semantic_candidates, 6)
+        self.assertEqual(response.stats.keyword_candidates, 6)
+        self.assertIsNone(getattr(response.results[0], "rerank_score", None))
+        self.assertFalse(response.verification.enabled)
+        self.assertEqual(response.verification.reason, "Verification disabled.")
 
 
 if __name__ == "__main__":
