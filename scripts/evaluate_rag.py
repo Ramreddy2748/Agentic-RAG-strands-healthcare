@@ -40,7 +40,17 @@ def main() -> None:
     parser.add_argument("--index-dir", default=str(DEFAULT_INDEX_DIR))
     parser.add_argument("--output", default=str(DEFAULT_REPORT_PATH))
     parser.add_argument("--top-k", type=int, default=3)
+    parser.add_argument(
+        "--quality-mode",
+        choices=["fast", "balanced", "strict"],
+        default="balanced",
+    )
     parser.add_argument("--generate-answers", action="store_true")
+    parser.add_argument(
+        "--verify-answers",
+        action="store_true",
+        help="Run the online Strands verification layer during answer evaluation.",
+    )
     parser.add_argument("--evaluate-faithfulness", action="store_true")
     parser.add_argument(
         "--evaluation-model",
@@ -80,34 +90,44 @@ def main() -> None:
         answer_generator=answer_generator,
     )
     evaluations = []
+    original_verification_flag = os.environ.get("ENABLE_VERIFICATION")
+    if not args.verify_answers:
+        os.environ["ENABLE_VERIFICATION"] = "false"
 
-    for position, case in enumerate(cases, start=1):
-        print(f"[{position}/{len(cases)}] {case.case_id}: {case.question}")
-        try:
-            response = service.ask(
-                case.question,
-                search_mode=case.search_mode,
-                top_k=args.top_k,
-                rerank=not args.no_rerank,
-                generate_answer=args.generate_answers,
-                answer_top_k=min(3, args.top_k),
-                request_id=f"eval-{case.case_id}",
-            )
-            faithfulness = (
-                evaluate_faithfulness(response, judge=faithfulness_judge)
-                if faithfulness_judge is not None
-                else None
-            )
-            evaluations.append(
-                evaluate_response(
-                    case,
-                    response,
-                    faithfulness=faithfulness,
+    try:
+        for position, case in enumerate(cases, start=1):
+            print(f"[{position}/{len(cases)}] {case.case_id}: {case.question}")
+            try:
+                response = service.ask(
+                    case.question,
+                    search_mode=case.search_mode,
+                    quality_mode=args.quality_mode,
+                    top_k=args.top_k,
+                    rerank=not args.no_rerank,
+                    generate_answer=args.generate_answers,
+                    answer_top_k=min(3, args.top_k),
+                    request_id=f"eval-{case.case_id}",
                 )
-            )
-        except Exception as exc:
-            evaluations.append(failed_evaluation(case, exc))
-            print(f"  failed: {type(exc).__name__}: {exc}")
+                faithfulness = (
+                    evaluate_faithfulness(response, judge=faithfulness_judge)
+                    if faithfulness_judge is not None
+                    else None
+                )
+                evaluations.append(
+                    evaluate_response(
+                        case,
+                        response,
+                        faithfulness=faithfulness,
+                    )
+                )
+            except Exception as exc:
+                evaluations.append(failed_evaluation(case, exc))
+                print(f"  failed: {type(exc).__name__}: {exc}")
+    finally:
+        if original_verification_flag is None:
+            os.environ.pop("ENABLE_VERIFICATION", None)
+        else:
+            os.environ["ENABLE_VERIFICATION"] = original_verification_flag
 
     report = build_report(evaluations)
     output_path = Path(args.output)
