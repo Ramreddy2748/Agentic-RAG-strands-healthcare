@@ -620,6 +620,11 @@
     const submit = document.getElementById("submit");
     const statusText = document.getElementById("status");
     const questionInput = document.getElementById("question");
+    const apiKeyInput = document.getElementById("api-key");
+    const savedApiKey = localStorage.getItem("rag_api_key");
+    if (savedApiKey) {
+      apiKeyInput.value = savedApiKey;
+    }
 
     document.querySelectorAll(".suggestion").forEach((button) => {
       button.addEventListener("click", () => {
@@ -637,6 +642,10 @@
 
       appendUserMessage(payload.question);
       const loadingId = appendLoadingMessage();
+      const apiKey = apiKeyInput.value.trim();
+      if (apiKey) {
+        localStorage.setItem("rag_api_key", apiKey);
+      }
       setBusy(true);
 
       try {
@@ -644,7 +653,7 @@
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "X-API-Key": document.getElementById("api-key").value.trim()
+            "X-API-Key": apiKey
           },
           body: JSON.stringify(payload)
         });
@@ -654,6 +663,7 @@
         }
         replaceLoadingMessage(loadingId, assistantMessageHtml(body));
         renderEvidence(body);
+        questionInput.value = "";
         statusText.textContent = `Done in ${(body.timings.total_ms / 1000).toFixed(1)}s`;
       } catch (error) {
         replaceLoadingMessage(loadingId, errorMessageHtml(error.message));
