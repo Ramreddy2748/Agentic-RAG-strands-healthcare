@@ -73,7 +73,7 @@ Minimum local values:
 
 ```text
 GOOGLE_API_KEY=your_gemini_key
-RAG_API_KEYS=test-api-key
+RAG_API_KEYS=replace_with_local_api_key
 AUTH_MODE=api_key
 CORS_ALLOWED_ORIGINS=http://127.0.0.1:3000,http://localhost:3000
 ```
@@ -153,9 +153,11 @@ http://127.0.0.1:8000/docs
 Ask a question:
 
 ```bash
+export RAG_AUTH_HEADER='<your local API-key header>'
+
 curl -X POST http://127.0.0.1:8000/ask \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: test-api-key" \
+  $RAG_AUTH_HEADER \
   -d '{
     "question": "What does IC.1 require?",
     "search_mode": "auto",
@@ -178,7 +180,7 @@ Use the combined endpoint:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/documents/upload-and-index \
-  -H "X-API-Key: test-api-key" \
+  $RAG_AUTH_HEADER \
   -F "file=@data/sample.pdf"
 ```
 
@@ -186,14 +188,14 @@ The older debug endpoints still exist:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/documents/upload \
-  -H "X-API-Key: test-api-key" \
+  $RAG_AUTH_HEADER \
   -F "file=@data/sample.pdf"
 
 curl -X POST "http://127.0.0.1:8000/documents/<document_id>/ingest?show=5" \
-  -H "X-API-Key: test-api-key"
+  $RAG_AUTH_HEADER
 
 curl -X POST "http://127.0.0.1:8000/documents/<document_id>/index" \
-  -H "X-API-Key: test-api-key"
+  $RAG_AUTH_HEADER
 ```
 
 Uploaded files support:
@@ -219,7 +221,7 @@ Set:
 
 ```text
 RAG_API_BASE_URL=http://127.0.0.1:8000
-RAG_API_KEY=test-api-key
+RAG_API_KEY=replace_with_same_value_as_backend_RAG_API_KEYS
 SESSION_SECRET=replace_with_a_long_random_session_secret
 USERS_CSV_PATH=data/users.csv
 ```
@@ -383,7 +385,7 @@ Protected endpoints require `X-API-Key`.
 
 ```text
 AUTH_MODE=api_key
-RAG_API_KEYS=test-api-key
+RAG_API_KEYS=replace_with_local_api_key
 ```
 
 Security features:
