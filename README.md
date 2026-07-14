@@ -49,6 +49,16 @@ uploads/           Runtime uploaded files, ignored
 
 ## Local Setup
 
+Prerequisites:
+
+```text
+Python 3.12+
+Node.js 20+
+Docker Desktop, optional for containerized backend
+MongoDB Atlas for uploaded-document vector search
+Gemini API key for routing and answer generation
+```
+
 Create the Python environment:
 
 ```bash
@@ -88,9 +98,34 @@ MONGODB_COLLECTION=chunks
 MONGODB_VECTOR_INDEX=chunk_embedding_vector_index
 ```
 
+MongoDB is required for the frontend upload-and-index flow. The local
+`.rag_index` path is still useful for the original DNV PDF index and quick
+retrieval experiments.
+
+For local curl examples, keep the key in a shell variable:
+
+```bash
+export RAG_API_KEY_VALUE='<your-local-api-key>'
+export RAG_HEADER_NAME='X-API-Key'
+```
+
+The README examples use `${RAG_HEADER_NAME}` and `${RAG_API_KEY_VALUE}` so
+example commands stay useful without placing API-key values directly in the
+repository.
+
 ## Build The Initial Index
 
-Place the DNV PDF or other source PDFs in `data/`.
+There are two indexing paths:
+
+```text
+Initial/local index:
+  data/ PDF -> .rag_index -> optional MongoDB upload
+
+Uploaded documents:
+  frontend/API upload -> extract -> chunk -> embed -> MongoDB
+```
+
+For the initial/local index, place the DNV PDF or other source PDFs in `data/`.
 
 Preview extraction and chunking:
 
@@ -153,11 +188,9 @@ http://127.0.0.1:8000/docs
 Ask a question:
 
 ```bash
-export RAG_AUTH_HEADER='<your local API-key header>'
-
 curl -X POST http://127.0.0.1:8000/ask \
   -H "Content-Type: application/json" \
-  $RAG_AUTH_HEADER \
+  -H "${RAG_HEADER_NAME}: ${RAG_API_KEY_VALUE}" \
   -d '{
     "question": "What does IC.1 require?",
     "search_mode": "auto",
@@ -180,7 +213,7 @@ Use the combined endpoint:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/documents/upload-and-index \
-  $RAG_AUTH_HEADER \
+  -H "${RAG_HEADER_NAME}: ${RAG_API_KEY_VALUE}" \
   -F "file=@data/sample.pdf"
 ```
 
@@ -188,14 +221,14 @@ The older debug endpoints still exist:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/documents/upload \
-  $RAG_AUTH_HEADER \
+  -H "${RAG_HEADER_NAME}: ${RAG_API_KEY_VALUE}" \
   -F "file=@data/sample.pdf"
 
 curl -X POST "http://127.0.0.1:8000/documents/<document_id>/ingest?show=5" \
-  $RAG_AUTH_HEADER
+  -H "${RAG_HEADER_NAME}: ${RAG_API_KEY_VALUE}"
 
 curl -X POST "http://127.0.0.1:8000/documents/<document_id>/index" \
-  $RAG_AUTH_HEADER
+  -H "${RAG_HEADER_NAME}: ${RAG_API_KEY_VALUE}"
 ```
 
 Uploaded files support:
@@ -237,6 +270,18 @@ Open:
 
 ```text
 http://127.0.0.1:3000
+```
+
+Typical local startup order:
+
+```text
+1. Start MongoDB Atlas and confirm the vector index exists.
+2. Start FastAPI or Docker Compose on port 8000.
+3. Start the Next.js frontend on port 3000.
+4. Sign up in the frontend.
+5. Upload a PDF, CSV, or JSON file.
+6. Wait for indexing to finish.
+7. Ask questions from the chat panel.
 ```
 
 The frontend includes:
