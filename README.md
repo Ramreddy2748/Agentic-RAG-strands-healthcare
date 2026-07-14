@@ -3,91 +3,84 @@
 [![CI](https://github.com/Ramreddy2748/Agentic-RAG-strands-healthcare/actions/workflows/ci.yml/badge.svg)](https://github.com/Ramreddy2748/Agentic-RAG-strands-healthcare/actions/workflows/ci.yml)
 [![Security](https://github.com/Ramreddy2748/Agentic-RAG-strands-healthcare/actions/workflows/security.yml/badge.svg)](https://github.com/Ramreddy2748/Agentic-RAG-strands-healthcare/actions/workflows/security.yml)
 
-A layered retrieval-augmented generation project for searching DNV NIAHO
-hospital accreditation requirements.
+An end-to-end healthcare RAG workspace for grounded clinical and accreditation
+questions. The project indexes PDFs, CSVs, and JSON files, stores embeddings in
+MongoDB Atlas Vector Search or a local vector index, retrieves evidence with
+semantic, keyword, or hybrid search, and generates cited answers through Gemini.
 
-## Current Pipeline
+## What Is Built
 
 ```text
-PDF
-  -> page extraction
-  -> chapter and section detection
-  -> overlapping word chunks
+Source documents
+  -> extraction for PDF, CSV, and JSON
+  -> page/row/value normalization
+  -> chapter/section-aware chunking with overlap
   -> BGE-M3 embeddings
-  -> LLM query router
-  -> semantic search + BM25 keyword search
-  -> reciprocal-rank fusion
-  -> BGE reranking
-  -> grounded Gemini answer with citations
-  -> Strands verification agent
-  -> RAGService structured response
+  -> local .rag_index or MongoDB Vector Search
+
+User query
+  -> security checks
+  -> LLM router chooses semantic, keyword, or hybrid search
+  -> semantic retrieval + BM25 keyword retrieval
+  -> reciprocal-rank fusion for hybrid search
+  -> optional BGE reranking
+  -> Gemini cited clinical answer
+  -> optional Strands verification
+  -> FastAPI response
+  -> Next.js frontend
 ```
 
-The chunking strategy preserves chapter, section, and page metadata. By
-default, chunks contain up to 900 words with 150 words of overlap.
+The default chunking strategy uses up to `900` words per chunk with `150` words
+of overlap. Chunk metadata preserves source ID, source path, page range, chapter
+title, section title, and chunk ID.
 
-## Setup
+## Repository Layout
+
+```text
+rag_chatbot/       Python RAG layers and FastAPI app
+frontend/          Next.js web app with login, upload, and chat UI
+scripts/           Index building, search, upload, ingestion, and evaluation CLIs
+tests/             Unit tests for data, retrieval, API, security, and ingestion
+evaluation/        Example and synthetic JSONL evaluation question sets
+data/              Local source files, ignored for large PDFs
+.rag_index/        Local generated vector index, ignored
+uploads/           Runtime uploaded files, ignored
+```
+
+## Local Setup
+
+Create the Python environment:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -e .
-```
-
-Install the optional Strands agent dependency when running answer verification:
-
-```bash
-python -m pip install -e '.[strands]'
-```
-
-Place the source PDF in `data/`. PDFs, generated embeddings, and environment
-files are intentionally excluded from Git.
-
-## Preview the Data Layer
-
-```bash
-python scripts/preview_data_layer.py --show 5
-```
-
-## Preview the Embedding Build
-
-The embedding script selects the first three chapters by default.
-
-```bash
-python scripts/build_vector_index.py --dry-run
-```
-
-For a smaller test:
-
-```bash
-python scripts/build_vector_index.py \
-  --max-chapters 1 \
-  --chunk-words 300 \
-  --overlap-words 50 \
-  --batch-size 1
-```
-
-The generated index is stored locally in:
-
-```text
-.rag_index/embeddings.npz
-.rag_index/metadata.json
-```
-
-## MongoDB Vector Search
-
-The app can keep using the local `.rag_index`, or it can store chunks and
-embeddings in MongoDB Atlas Vector Search.
-
-Install the optional MongoDB dependency:
-
-```bash
 python -m pip install -e '.[mongodb]'
 ```
 
-Set MongoDB configuration:
+Install Strands only if you want the optional verification agent:
 
 ```bash
+python -m pip install -e '.[mongodb,strands]'
+```
+
+Create `.env` from the example:
+
+```bash
+cp .env.example .env
+```
+
+Minimum local values:
+
+```text
+GOOGLE_API_KEY=your_gemini_key
+RAG_API_KEYS=test-api-key
+AUTH_MODE=api_key
+CORS_ALLOWED_ORIGINS=http://127.0.0.1:3000,http://localhost:3000
+```
+
+For MongoDB Vector Search:
+
+```text
 VECTOR_BACKEND=mongodb
 MONGODB_URI=mongodb+srv://...
 MONGODB_DATABASE=healthcare_rag
@@ -95,49 +88,54 @@ MONGODB_COLLECTION=chunks
 MONGODB_VECTOR_INDEX=chunk_embedding_vector_index
 ```
 
-Upload the existing local index into MongoDB:
+## Build The Initial Index
+
+Place the DNV PDF or other source PDFs in `data/`.
+
+Preview extraction and chunking:
+
+```bash
+python scripts/preview_data_layer.py --show 5
+```
+
+Build a local index:
+
+```bash
+python scripts/build_vector_index.py \
+  --max-chapters 1000 \
+  --chunk-words 900 \
+  --overlap-words 150 \
+  --batch-size 1
+```
+
+The local index is written to:
+
+```text
+.rag_index/embeddings.npz
+.rag_index/metadata.json
+```
+
+Upload the local index to MongoDB:
 
 ```bash
 python scripts/upload_vector_index_to_mongodb.py --index-dir .rag_index
 ```
 
-Create an Atlas Vector Search index on the `embedding` field with 1024
-dimensions and cosine similarity. Keep the Atlas index name the same as
-`MONGODB_VECTOR_INDEX`.
+Your MongoDB Atlas vector index must target the `embedding` field with:
 
-After that, start the API normally. Semantic and hybrid search will use
-MongoDB for vector retrieval, while keyword search still uses the loaded chunk
-metadata for BM25.
-
-## Orchestration Service
-
-All query-time layers are coordinated through one reusable entry point:
-
-```python
-from rag_chatbot.rag_service import RAGService
-
-service = RAGService.from_index_dir(".rag_index")
-response = service.ask("What is quality management?")
-
-print(response.search_mode)
-print(response.answer)
-print(response.results)
+```text
+dimensions: 1024
+similarity: cosine
 ```
 
-The CLI and future API layer both use this same service.
+Keep the Atlas index name equal to `MONGODB_VECTOR_INDEX`.
 
-## FastAPI
+## Run FastAPI
 
-Start the local API:
+Start the backend:
 
 ```bash
 uvicorn rag_chatbot.api:app --host 127.0.0.1 --port 8000
-```
-
-Interactive API documentation:
-
-```text
-http://127.0.0.1:8000/docs
 ```
 
 Health check:
@@ -146,56 +144,89 @@ Health check:
 curl http://127.0.0.1:8000/health
 ```
 
+Interactive API docs:
+
+```text
+http://127.0.0.1:8000/docs
+```
+
 Ask a question:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/ask \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: $RAG_CLIENT_API_KEY" \
+  -H "X-API-Key: test-api-key" \
   -d '{
-    "question": "What are the quality management responsibilities?",
+    "question": "What does IC.1 require?",
     "search_mode": "auto",
-    "quality_mode": "balanced",
+    "quality_mode": "fast",
     "top_k": 3,
-    "rerank": true,
+    "rerank": false,
     "generate_answer": true
   }'
 ```
 
-Upload a PDF, CSV, or JSON file:
+## Upload And Ask
+
+The product flow is now one step from the user side:
+
+```text
+Upload document -> backend extracts, chunks, embeds, and saves to MongoDB -> ask
+```
+
+Use the combined endpoint:
 
 ```bash
-curl -X POST http://127.0.0.1:8000/documents/upload \
-  -H "X-API-Key: $RAG_CLIENT_API_KEY" \
+curl -X POST http://127.0.0.1:8000/documents/upload-and-index \
+  -H "X-API-Key: test-api-key" \
   -F "file=@data/sample.pdf"
 ```
 
-Preview extracted elements before indexing:
+The older debug endpoints still exist:
 
 ```bash
+curl -X POST http://127.0.0.1:8000/documents/upload \
+  -H "X-API-Key: test-api-key" \
+  -F "file=@data/sample.pdf"
+
 curl -X POST "http://127.0.0.1:8000/documents/<document_id>/ingest?show=5" \
-  -H "X-API-Key: $RAG_CLIENT_API_KEY"
-```
+  -H "X-API-Key: test-api-key"
 
-Index the uploaded document into MongoDB Vector Search:
-
-```bash
 curl -X POST "http://127.0.0.1:8000/documents/<document_id>/index" \
-  -H "X-API-Key: $RAG_CLIENT_API_KEY"
+  -H "X-API-Key: test-api-key"
 ```
 
-The same indexing step can be run from the terminal:
+Uploaded files support:
 
-```bash
-python scripts/index_uploaded_document.py <document_id>
+```text
+PDF
+CSV
+JSON
 ```
 
-## Next.js Frontend
+## Run The Frontend
 
-The Next.js app lives in `frontend/` and connects to the FastAPI backend.
+The Next.js app lives in `frontend/`.
+
+Create the frontend env file:
 
 ```bash
 cd frontend
+cp .env.example .env.local
+```
+
+Set:
+
+```text
+RAG_API_BASE_URL=http://127.0.0.1:8000
+RAG_API_KEY=test-api-key
+SESSION_SECRET=replace_with_a_long_random_session_secret
+USERS_CSV_PATH=data/users.csv
+```
+
+Install and run:
+
+```bash
 npm install
 npm run dev
 ```
@@ -206,147 +237,101 @@ Open:
 http://127.0.0.1:3000
 ```
 
-Set the backend URL to `http://127.0.0.1:8000` and the same API key used by
-FastAPI, such as `test-api-key` for local development.
+The frontend includes:
 
-## Security Guardrails
+- signup and login
+- server-side session cookie
+- document upload
+- automatic upload-and-index
+- chat with citations
+- source panels
+- timings in seconds
 
-The `/ask` endpoint requires an API key. Generate a strong key:
-
-```bash
-openssl rand -hex 32
-```
-
-Add it to `.env`:
-
-```text
-RAG_API_KEYS=generated_key_here
-```
-
-Set the same value in the client environment:
+For production-style local serving:
 
 ```bash
-export RAG_CLIENT_API_KEY=generated_key_here
+npm run build
+npm run start -- --hostname 127.0.0.1 --port 3000
 ```
 
-Multiple keys can be accepted during rotation:
+When using `next start`, rebuild after frontend code changes.
 
-```text
-RAG_API_KEYS=current_key,next_key
-```
+## Docker
 
-API keys are compared in constant time and are never included in application
-logs. If `RAG_API_KEYS` is missing, protected requests fail closed with `503`.
-Missing or invalid client keys return `401`. The public `/health` endpoint
-remains unauthenticated for container and load-balancer health checks.
-
-Before routing or retrieval, the API locally rejects common prompt-injection
-techniques, including trusted-instruction overrides, forged model roles,
-system-prompt extraction, credential extraction, and jailbreak language.
-Rejected questions return `prompt_injection_detected` and never enter the RAG
-pipeline or make a Gemini call.
-
-Each authenticated identity is also limited before expensive model work:
-
-```text
-RATE_LIMIT_REQUESTS=5
-RATE_LIMIT_WINDOW_SECONDS=60
-```
-
-Exceeded limits return `429` with a `Retry-After` header. This in-process
-limiter protects one API process. For multiple AWS tasks or replicas, configure
-the same account-wide limit in API Gateway or AWS WAF.
-
-Browser access is disabled unless exact origins are configured:
-
-```text
-CORS_ALLOWED_ORIGINS=https://app.example.org,https://admin.example.org
-```
-
-Wildcard origins are rejected. Restart the API after changing CORS settings.
-
-After retrieval and reranking, the service checks the best evidence score:
-
-```text
-MIN_RERANK_SCORE=0.50
-MIN_SEMANTIC_SCORE=0.35
-MIN_KEYWORD_SCORE=0.01
-```
-
-If evidence is below the applicable threshold, Gemini answer generation is
-skipped and the response reports `evidence_sufficient: false`. Tune thresholds
-using the offline evaluation set before production deployment.
-
-Generated answers are checked for prompt disclosure, credential language, and
-configured secret values. Unsafe output is withheld. Structured logs recursively
-redact questions, authorization fields, credentials, and known secret values
-while retaining request IDs and non-sensitive timing data.
-
-### AWS Authentication
-
-For local development, use:
-
-```text
-AUTH_MODE=api_key
-```
-
-Behind an authenticated AWS API Gateway or trusted reverse proxy, use:
-
-```text
-AUTH_MODE=trusted_proxy
-TRUSTED_PROXY_SECRET=long_internal_secret
-```
-
-The proxy must remove client-supplied `X-Authenticated-User` and
-`X-Proxy-Secret` headers, authenticate the caller, then inject:
-
-```text
-X-Authenticated-User: stable-user-identity
-X-Proxy-Secret: long_internal_secret
-```
-
-Do not expose the container directly to the internet in `trusted_proxy` mode.
-Store `TRUSTED_PROXY_SECRET` and `GOOGLE_API_KEY` in AWS Secrets Manager rather
-than the image or repository.
-
-## Search the Vector Index
+Run the backend with Docker Compose:
 
 ```bash
-python scripts/search_vector_index.py \
-  "What are the quality management responsibilities?"
+docker compose up --build -d
 ```
 
-By default, Gemini first chooses `semantic`, `keyword`, or `hybrid` retrieval
-from the query. If routing is unavailable, the pipeline safely falls back to
-hybrid search. The selected candidates are then reranked with
-`BAAI/bge-reranker-v2-m3`. The top 3 chunks are sent to Gemini for a grounded
-answer with section and page citations.
+Check the container:
 
-Retrieval depth is selected automatically from the routed mode:
+```bash
+docker ps
+curl http://127.0.0.1:8000/health
+```
+
+Stop it:
+
+```bash
+docker compose down
+```
+
+The Compose file mounts `.rag_index` and a Hugging Face cache volume. For local
+development it sets:
 
 ```text
-keyword  -> 5 candidates
-semantic -> 8 candidates
-hybrid   -> 12 candidates
+PRELOAD_MODELS=false
 ```
 
-The API also supports `quality_mode` to trade speed for confidence:
+That makes the API start faster. Models load lazily on the first retrieval,
+upload-index, or rerank request.
+
+Build manually:
+
+```bash
+docker build -t agentic-healthcare-rag:local .
+```
+
+Build with Strands:
+
+```bash
+docker build \
+  --build-arg INSTALL_STRANDS=true \
+  -t agentic-healthcare-rag:local .
+```
+
+## Retrieval Modes
+
+The router can choose the retrieval mode automatically:
 
 ```text
-fast:
-  fewer candidates, no reranker, no verification
-
-balanced:
-  default candidates, reranker on, verification on
-
-strict:
-  more candidates, reranker on, verification on
+keyword  -> exact codes and exact terms, e.g. IC.1 or QM.4
+semantic -> natural-language meaning search
+hybrid   -> combines keyword and semantic results
 ```
 
-Use `fast` for quick local exploration and `strict` for slower compliance-style
-answers where stronger grounding is worth the latency.
+Hybrid search uses reciprocal-rank fusion so duplicate semantic and keyword
+hits become one candidate instead of repeated output.
 
-The answer is returned in a clinician-friendly structure:
+Default candidate depth:
+
+```text
+fast quality:
+  hybrid 6, semantic 6, keyword 6, rerank off, verification off
+
+balanced quality:
+  keyword 5, semantic 8, hybrid 12, rerank on, verification on
+
+strict quality:
+  more candidates, rerank on, verification on
+```
+
+Use `fast` for local speed and `strict` when stronger evidence checking matters.
+
+## Answer Format
+
+Answers are structured for clinical reading:
 
 ```json
 {
@@ -361,111 +346,94 @@ The answer is returned in a clinician-friendly structure:
 }
 ```
 
-Citation numbers map directly to the authoritative metadata in `sources`.
+Citation numbers map to the `sources` array returned by the API.
 
-## Strands Verification Layer
+## Strands Verification
 
-When `ENABLE_VERIFICATION=true`, the generated clinical answer is passed to a
-Strands verification agent before it is returned. The agent receives only:
+When enabled, the generated answer is sent to a Strands verification agent. The
+agent checks whether each cited claim is supported by the retrieved source text.
+Unsupported or unclear optional claims can be removed before the response is
+returned.
+
+Enable or disable:
 
 ```text
-the user question
-the generated answer claims
-the retrieved source chunks cited by those claims
+ENABLE_VERIFICATION=true
 ```
 
-It checks each claim against its cited source text, marks claims as supported,
-unsupported, or unclear, strips unsupported or unclear optional claims, and
-returns verification metadata:
+Verification metadata is returned with every answer:
 
 ```json
 {
   "verification": {
     "enabled": true,
-    "verified": false,
-    "confidence": 0.84,
-    "checked_claims": 5,
+    "verified": true,
+    "confidence": 1.0,
+    "checked_claims": 4,
     "supported_claims": 4,
-    "removed_claims": 1,
-    "unclear_claims": 0,
-    "reason": "Removed 1 unsupported claim(s).",
-    "unsupported_claims": ["Unsupported claim text"]
+    "removed_claims": 0,
+    "unclear_claims": 0
   }
 }
 ```
 
-This adds one extra agent/LLM call per generated answer. For retrieval-only or
-low-cost local tests, set:
+## Security
+
+Protected endpoints require `X-API-Key`.
 
 ```text
-ENABLE_VERIFICATION=false
+AUTH_MODE=api_key
+RAG_API_KEYS=test-api-key
 ```
 
-For Docker builds that include Strands:
+Security features:
 
-```bash
-docker build --build-arg INSTALL_STRANDS=true -t agentic-healthcare-rag .
-```
+- API key authentication
+- constant-time API key comparison
+- per-identity rate limiting
+- prompt-injection detection before retrieval
+- CORS allowlist
+- unsafe answer filtering
+- structured request logging with redaction
 
-## Observability
-
-Every query includes a request ID, candidate counts, and stage timings:
-
-```json
-{
-  "request_id": "d62d...",
-  "timings": {
-    "routing_ms": 420.1,
-    "retrieval_ms": 2100.4,
-    "fusion_ms": 0.08,
-    "reranking_ms": 8400.2,
-    "answer_generation_ms": 1800.5,
-    "verification_ms": 920.0,
-    "total_ms": 13641.28
-  }
-}
-```
-
-The API also returns the request ID in the `X-Request-ID` header. Server logs
-are emitted as JSON and include the selected mode, candidate counts, returned
-sections, timings, and failures. Configure verbosity with `LOG_LEVEL`.
-
-## Model Lifecycle
-
-FastAPI loads BGE-M3 and the BGE reranker once during application startup,
-warms both models, and reuses them for every query. This removes repeated model
-loading from request latency.
+Rate limit settings:
 
 ```text
-PRELOAD_MODELS=true
-MAX_CONCURRENT_REQUESTS=1
+RATE_LIMIT_REQUESTS=5
+RATE_LIMIT_WINDOW_SECONDS=60
 ```
 
-The default concurrency of one protects CPU and memory while shared Torch
-models are running. Increase it only after testing on the target machine.
+For an AWS API Gateway or trusted reverse proxy:
 
-## Offline Evaluation
-
-Evaluation cases are stored as newline-delimited JSON. Each case can specify
-expected sections and phrases:
-
-```json
-{"case_id":"ic-1","question":"What does IC.1 require?","expected_sections":["IC.1"],"expected_terms":["infection prevention and control program"],"search_mode":"hybrid"}
+```text
+AUTH_MODE=trusted_proxy
+TRUSTED_PROXY_SECRET=long_internal_secret
 ```
 
-Run retrieval evaluation without Gemini answer generation:
+Do not expose the container directly to the internet in trusted proxy mode.
+
+## Evaluation
+
+Evaluation data lives in:
+
+```text
+evaluation/questions.example.jsonl
+evaluation/synthetic_qa.jsonl
+```
+
+Run retrieval-only evaluation:
 
 ```bash
 python scripts/evaluate_rag.py --no-rerank
 ```
 
-Run the complete pipeline, including reranking and grounded answers:
+Run answer generation evaluation:
 
 ```bash
-python scripts/evaluate_rag.py --generate-answers
+python scripts/evaluate_rag.py --no-rerank --generate-answers
 ```
 
-Evaluate whether every answer claim is supported by its cited passages:
+Run faithfulness judging:
 
 ```bash
 python scripts/evaluate_rag.py \
@@ -474,172 +442,82 @@ python scripts/evaluate_rag.py \
   --evaluate-faithfulness
 ```
 
-Faithfulness mode uses one answer call and one judge call per question. A shared
-limiter spaces all Gemini requests by at least 15 seconds, runs them
-sequentially, and does not retry failed calls in application code. Cases must
-use manual `semantic`, `keyword`, or `hybrid` modes so routing cannot add hidden
-API requests. Change the interval only when the model's published rate limit
-allows it:
+Evaluation metrics include:
 
-```bash
-python scripts/evaluate_rag.py \
-  --no-rerank \
-  --generate-answers \
-  --evaluate-faithfulness \
-  --api-interval-seconds 15
-```
+- section hit rate
+- mean reciprocal rank
+- section recall
+- expected-term recall
+- answer-term recall
+- citation validity
+- fully supported claim rate
+- grounded claim rate
+- latency
 
-The command writes `.rag_evaluation/report.json` with section hit rate, mean
-reciprocal rank, section recall, expected-term coverage, citation validity, and
-latency. Faithfulness runs also report fully supported and grounded claim rates,
-plus each unsupported claim and its reason. Failed questions are recorded
-individually without stopping the batch. Generated reports remain local and are
-excluded from Git.
-
-## Docker
-
-The image contains the API and Python dependencies. The generated vector index,
-Gemini credentials, and Hugging Face model cache remain outside the image.
-
-Build the image:
-
-```bash
-docker build -t agentic-healthcare-rag:local .
-```
-
-Build with the optional Strands verifier dependency:
-
-```bash
-docker build \
-  --build-arg INSTALL_STRANDS=true \
-  -t agentic-healthcare-rag:local .
-```
-
-Run it directly:
-
-```bash
-docker run --rm \
-  --name agentic-healthcare-rag \
-  --env-file .env \
-  -p 8000:8000 \
-  -v "$PWD/.rag_index:/app/.rag_index:ro" \
-  -v rag-huggingface-cache:/home/appuser/.cache/huggingface \
-  agentic-healthcare-rag:local
-```
-
-Or use Docker Compose:
-
-```bash
-docker compose up --build
-```
-
-The first container startup downloads and warms the BGE models. Later starts
-reuse the `huggingface-cache` volume. Verify the container at:
+Reports are written to:
 
 ```text
-http://127.0.0.1:8000/health
-http://127.0.0.1:8000/docs
+.rag_evaluation/report.json
 ```
 
-Stop Compose:
+Generated reports are ignored by Git.
 
-```bash
-docker compose down
-```
+## CI And Security Scans
 
-Do not copy `.env`, PDFs, `.rag_index`, or model caches into the image. In AWS,
-the same container can receive secrets from Secrets Manager and the index from
-S3 or a mounted volume.
+GitHub Actions runs on pushes and pull requests.
 
-## AWS Index Bootstrap
+CI checks:
 
-For ECS/Fargate, upload the generated index to S3:
+- Python install
+- source compilation
+- unit tests
+- Docker build
 
-```bash
-aws s3 sync .rag_index s3://agentic-healthcare-rag-index/rag-index/ \
-  --region us-east-1
-```
+Security checks:
 
-The container checks `RAG_INDEX_DIR` during startup. If `metadata.json` and
-`embeddings.npz` are missing locally and `INDEX_S3_BUCKET` is set, it downloads
-both files from S3 before loading the RAG service.
+- Gitleaks secret scan
+- dependency audit
+- dependency review
+- weekly scheduled scan
 
-Use these ECS environment variables:
+The workflows do not require the source PDF, `.rag_index`, or a Gemini key.
+
+## AWS Notes
+
+The project was prepared for container deployment, but local development is the
+recommended path while experimenting because ECS/Fargate, CloudWatch, NAT, and
+load balancers can create cost.
+
+If deploying later:
+
+- push the Docker image to ECR
+- keep secrets in Secrets Manager
+- use MongoDB Atlas for vector storage
+- use API Gateway or an authenticated reverse proxy
+- avoid public unauthenticated container access
+- set billing alerts before starting ECS services
+
+## Ignored Local Files
+
+These are intentionally not committed:
 
 ```text
-RAG_INDEX_DIR=/app/.rag_index
-INDEX_S3_BUCKET=agentic-healthcare-rag-index
-INDEX_S3_PREFIX=rag-index
-AWS_REGION=us-east-1
+.env
+.rag_index/
+.rag_evaluation/
+uploads/
+data/*.pdf
+frontend/.env.local
+frontend/data/users.csv
+frontend/.next/
+frontend/node_modules/
 ```
 
-The ECS task role needs:
+## Models
 
-```text
-s3:GetObject on arn:aws:s3:::agentic-healthcare-rag-index/rag-index/*
-```
+The project uses:
 
-Local development can keep using the mounted `.rag_index` directory and leave
-`INDEX_S3_BUCKET` empty.
-
-## Continuous Integration
-
-GitHub Actions runs automatically on pushes and pull requests targeting `main`.
-
-`CI` performs:
-
-- Python 3.12 dependency installation
-- Python source compilation
-- All unit tests with model downloads and Gemini calls disabled
-- A complete Docker image build without publishing the image
-
-`Security` performs:
-
-- Full-history secret scanning with Gitleaks
-- Python dependency vulnerability auditing with `pip-audit`
-- Dependency review for pull requests
-- A scheduled security scan every Monday
-
-View results under the repository's **Actions** tab. The workflows do not
-require `GOOGLE_API_KEY`, the source PDF, or `.rag_index`.
-
-Set `GOOGLE_API_KEY` in `.env` or your shell to enable automatic routing.
-Manual modes remain available for debugging:
-
-To inspect retrieval without generating an answer:
-
-```bash
-python scripts/search_vector_index.py \
-  "What are the quality management responsibilities?" \
-  --show-results-only
-```
-
-Compare the three retrieval modes without reranking:
-
-```bash
-python scripts/search_vector_index.py \
-  "What are the quality management responsibilities?" \
-  --search-mode hybrid \
-  --no-rerank
-
-python scripts/search_vector_index.py \
-  "QM.1 SR.1a QAPI" \
-  --search-mode keyword \
-  --no-rerank
-
-python scripts/search_vector_index.py \
-  "What are the quality management responsibilities?" \
-  --search-mode semantic \
-  --no-rerank
-```
-
-Hybrid fusion weights remain configurable with `--semantic-weight` and
-`--keyword-weight`.
-
-## Retrieval Models
-
-The project uses the open-weight
-[`BAAI/bge-m3`](https://huggingface.co/BAAI/bge-m3) model through
-`sentence-transformers` for vector retrieval. It uses
-[`BAAI/bge-reranker-v2-m3`](https://huggingface.co/BAAI/bge-reranker-v2-m3)
-to score each query and candidate passage together before returning results.
+- `BAAI/bge-m3` for embeddings
+- `BAAI/bge-reranker-v2-m3` for reranking
+- Gemini for routing and answer generation
+- optional Strands agent for verification
