@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Literal
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
@@ -16,7 +16,17 @@ from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, ConfigDict, Field
 
 from rag_chatbot.answer_layer import DEFAULT_ANSWER_MODEL, ClinicalAnswer
+from rag_chatbot.document_layer import UploadedDocument, save_uploaded_document
 from rag_chatbot.embedding_layer import DEFAULT_INDEX_DIR
+from rag_chatbot.ingestion_layer import (
+    DocumentElement,
+    IngestionResult,
+    ingest_uploaded_document,
+)
+from rag_chatbot.indexing_layer import (
+    DocumentIndexingResult,
+    index_uploaded_document,
+)
 from rag_chatbot.index_storage import ensure_index_available, index_is_available
 from rag_chatbot.observability import PipelineTimings, new_request_id
 from rag_chatbot.rag_service import RAGResponse, RAGService, RankedResult
@@ -134,25 +144,88 @@ class HealthResponse(BaseModel):
     """Basic process and index availability status."""
 
     status: str
+    vector_backend: str
     index_dir: str
     index_available: bool
     preload_models: bool
     max_concurrent_requests: int
 
 
+class DocumentUploadResponse(BaseModel):
+    """Response returned after storing an uploaded source document."""
+
+    document_id: str
+    filename: str
+    stored_filename: str
+    content_type: str
+    file_extension: str
+    size_bytes: int
+    status: str
+    created_at: str
+
+
+class DocumentElementResponse(BaseModel):
+    """One normalized element extracted from an uploaded document."""
+
+    content_type: str
+    text: str
+    page_number: int | None = None
+    row_number: int | None = None
+    json_path: str | None = None
+    metadata: dict[str, str] | None = None
+
+
+class DocumentIngestionResponse(BaseModel):
+    """Preview response for extracting an uploaded document."""
+
+    document_id: str
+    filename: str
+    file_extension: str
+    element_count: int
+    elements: list[DocumentElementResponse]
+
+
+class DocumentIndexingResponse(BaseModel):
+    """Response returned after embedding and upserting an uploaded document."""
+
+    document_id: str
+    filename: str
+    file_extension: str
+    element_count: int
+    chunk_count: int
+    upserted_count: int
+    model_name: str
+
+
+class DocumentUploadAndIndexResponse(BaseModel):
+    """Response returned after uploading and indexing one source document."""
+
+    document: DocumentUploadResponse
+    indexing: DocumentIndexingResponse
+    status: str
+
+
 @lru_cache(maxsize=1)
 def get_rag_service() -> RAGService:
     """Load and cache the vector index and reusable query-time services."""
     load_dotenv()
-    return RAGService.from_index_dir(
-        os.getenv("RAG_INDEX_DIR", str(DEFAULT_INDEX_DIR)),
-        router_model=os.getenv("ROUTER_MODEL", DEFAULT_ROUTER_MODEL),
-        reranker_model=os.getenv("RERANKER_MODEL", DEFAULT_RERANKER_MODEL),
-        answer_model=os.getenv("ANSWER_MODEL", DEFAULT_ANSWER_MODEL),
-        verification_model=os.getenv(
+    vector_backend = os.getenv("VECTOR_BACKEND", "local").strip().lower()
+    service_kwargs = {
+        "router_model": os.getenv("ROUTER_MODEL", DEFAULT_ROUTER_MODEL),
+        "reranker_model": os.getenv("RERANKER_MODEL", DEFAULT_RERANKER_MODEL),
+        "answer_model": os.getenv("ANSWER_MODEL", DEFAULT_ANSWER_MODEL),
+        "verification_model": os.getenv(
             "VERIFICATION_MODEL",
             DEFAULT_VERIFICATION_MODEL,
         ),
+    }
+    if vector_backend == "mongodb":
+        return RAGService.from_mongodb(**service_kwargs)
+    if vector_backend != "local":
+        raise RuntimeError(f"Unsupported VECTOR_BACKEND: {vector_backend}")
+    return RAGService.from_index_dir(
+        os.getenv("RAG_INDEX_DIR", str(DEFAULT_INDEX_DIR)),
+        **service_kwargs,
     )
 
 
@@ -232,13 +305,15 @@ async def lifespan(app_instance: FastAPI):
     )
     app_instance.state.security_rate_limiter = build_security_rate_limiter()
 
+    vector_backend = os.getenv("VECTOR_BACKEND", "local").strip().lower()
     index_dir = Path(os.getenv("RAG_INDEX_DIR", str(DEFAULT_INDEX_DIR)))
     if get_rag_service not in app_instance.dependency_overrides:
-        await run_in_threadpool(
-            ensure_index_available,
-            index_dir,
-            region=os.getenv("AWS_REGION"),
-        )
+        if vector_backend == "local":
+            await run_in_threadpool(
+                ensure_index_available,
+                index_dir,
+                region=os.getenv("AWS_REGION"),
+            )
 
     should_preload = env_flag("PRELOAD_MODELS", True)
     if should_preload and get_rag_service not in app_instance.dependency_overrides:
@@ -270,10 +345,12 @@ if cors_origins:
 @app.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     """Report whether the API process can see the persisted index."""
+    vector_backend = os.getenv("VECTOR_BACKEND", "local").strip().lower()
     index_dir = Path(os.getenv("RAG_INDEX_DIR", str(DEFAULT_INDEX_DIR)))
-    index_available = index_is_available(index_dir)
+    index_available = True if vector_backend == "mongodb" else index_is_available(index_dir)
     return HealthResponse(
         status="ok" if index_available else "degraded",
+        vector_backend=vector_backend,
         index_dir=str(index_dir),
         index_available=index_available,
         preload_models=env_flag("PRELOAD_MODELS", True),
@@ -288,6 +365,109 @@ def health() -> HealthResponse:
 def index_page() -> HTMLResponse:
     """Serve the small browser UI for asking RAG questions."""
     return HTMLResponse((STATIC_DIR / "index.html").read_text(encoding="utf-8"))
+
+
+@app.post("/documents/upload", response_model=DocumentUploadResponse)
+async def upload_document(
+    file: UploadFile = File(...),
+    _: AuthenticatedPrincipal = Depends(require_principal),
+) -> DocumentUploadResponse:
+    """Store one source document for a later ingestion/indexing step."""
+    try:
+        content = await file.read()
+        document = await run_in_threadpool(
+            save_uploaded_document,
+            filename=file.filename or "",
+            content_type=file.content_type,
+            content=content,
+            upload_dir=os.getenv("UPLOAD_DIR", "uploads"),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return document_to_api(document)
+
+
+@app.post(
+    "/documents/upload-and-index",
+    response_model=DocumentUploadAndIndexResponse,
+)
+async def upload_and_index_document(
+    file: UploadFile = File(...),
+    _: AuthenticatedPrincipal = Depends(require_principal),
+) -> DocumentUploadAndIndexResponse:
+    """Store one source document and immediately index it into the vector store."""
+    try:
+        content = await file.read()
+        document = await run_in_threadpool(
+            save_uploaded_document,
+            filename=file.filename or "",
+            content_type=file.content_type,
+            content=content,
+            upload_dir=os.getenv("UPLOAD_DIR", "uploads"),
+        )
+        indexing = await run_in_threadpool(
+            index_uploaded_document,
+            document.document_id,
+            upload_dir=os.getenv("UPLOAD_DIR", "uploads"),
+            model_name=os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3"),
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return DocumentUploadAndIndexResponse(
+        document=document_to_api(document),
+        indexing=indexing_to_api(indexing),
+        status="ready",
+    )
+
+
+@app.post(
+    "/documents/{document_id}/ingest",
+    response_model=DocumentIngestionResponse,
+)
+async def ingest_uploaded_document_endpoint(
+    document_id: str,
+    show: int = 5,
+    _: AuthenticatedPrincipal = Depends(require_principal),
+) -> DocumentIngestionResponse:
+    """Preview extraction for one uploaded document without embedding it."""
+    try:
+        result = await run_in_threadpool(
+            ingest_uploaded_document,
+            document_id,
+            upload_dir=os.getenv("UPLOAD_DIR", "uploads"),
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ingestion_to_api(result, show=max(1, min(show, 50)))
+
+
+@app.post(
+    "/documents/{document_id}/index",
+    response_model=DocumentIndexingResponse,
+)
+async def index_uploaded_document_endpoint(
+    document_id: str,
+    _: AuthenticatedPrincipal = Depends(require_principal),
+) -> DocumentIndexingResponse:
+    """Embed and upsert one uploaded document into the vector store."""
+    try:
+        result = await run_in_threadpool(
+            index_uploaded_document,
+            document_id,
+            upload_dir=os.getenv("UPLOAD_DIR", "uploads"),
+            model_name=os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3"),
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return indexing_to_api(result)
 
 
 @app.post("/ask", response_model=AskResponse)
@@ -358,6 +538,60 @@ async def ask(
         ) from exc
 
     return response_to_api(response)
+
+
+def document_to_api(document: UploadedDocument) -> DocumentUploadResponse:
+    """Convert uploaded document metadata into the public API response."""
+    return DocumentUploadResponse(
+        document_id=document.document_id,
+        filename=document.original_filename,
+        stored_filename=document.stored_filename,
+        content_type=document.content_type,
+        file_extension=document.file_extension,
+        size_bytes=document.size_bytes,
+        status=document.status,
+        created_at=document.created_at,
+    )
+
+
+def ingestion_to_api(
+    result: IngestionResult,
+    *,
+    show: int,
+) -> DocumentIngestionResponse:
+    """Convert an ingestion preview into the public API response."""
+    return DocumentIngestionResponse(
+        document_id=result.document_id,
+        filename=result.filename,
+        file_extension=result.file_extension,
+        element_count=result.element_count,
+        elements=[element_to_api(element) for element in result.elements[:show]],
+    )
+
+
+def indexing_to_api(result: DocumentIndexingResult) -> DocumentIndexingResponse:
+    """Convert indexing output into the public API response."""
+    return DocumentIndexingResponse(
+        document_id=result.document_id,
+        filename=result.filename,
+        file_extension=result.file_extension,
+        element_count=result.element_count,
+        chunk_count=result.chunk_count,
+        upserted_count=result.upserted_count,
+        model_name=result.model_name,
+    )
+
+
+def element_to_api(element: DocumentElement) -> DocumentElementResponse:
+    """Convert one normalized extracted element into the API schema."""
+    return DocumentElementResponse(
+        content_type=element.content_type,
+        text=element.text,
+        page_number=element.page_number,
+        row_number=element.row_number,
+        json_path=element.json_path,
+        metadata=element.metadata,
+    )
 
 
 def response_to_api(response: RAGResponse) -> AskResponse:

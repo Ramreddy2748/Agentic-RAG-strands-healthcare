@@ -74,6 +74,41 @@ The generated index is stored locally in:
 .rag_index/metadata.json
 ```
 
+## MongoDB Vector Search
+
+The app can keep using the local `.rag_index`, or it can store chunks and
+embeddings in MongoDB Atlas Vector Search.
+
+Install the optional MongoDB dependency:
+
+```bash
+python -m pip install -e '.[mongodb]'
+```
+
+Set MongoDB configuration:
+
+```bash
+VECTOR_BACKEND=mongodb
+MONGODB_URI=mongodb+srv://...
+MONGODB_DATABASE=healthcare_rag
+MONGODB_COLLECTION=chunks
+MONGODB_VECTOR_INDEX=chunk_embedding_vector_index
+```
+
+Upload the existing local index into MongoDB:
+
+```bash
+python scripts/upload_vector_index_to_mongodb.py --index-dir .rag_index
+```
+
+Create an Atlas Vector Search index on the `embedding` field with 1024
+dimensions and cosine similarity. Keep the Atlas index name the same as
+`MONGODB_VECTOR_INDEX`.
+
+After that, start the API normally. Semantic and hybrid search will use
+MongoDB for vector retrieval, while keyword search still uses the loaded chunk
+metadata for BM25.
+
 ## Orchestration Service
 
 All query-time layers are coordinated through one reusable entry point:
@@ -126,6 +161,53 @@ curl -X POST http://127.0.0.1:8000/ask \
     "generate_answer": true
   }'
 ```
+
+Upload a PDF, CSV, or JSON file:
+
+```bash
+curl -X POST http://127.0.0.1:8000/documents/upload \
+  -H "X-API-Key: $RAG_CLIENT_API_KEY" \
+  -F "file=@data/sample.pdf"
+```
+
+Preview extracted elements before indexing:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/documents/<document_id>/ingest?show=5" \
+  -H "X-API-Key: $RAG_CLIENT_API_KEY"
+```
+
+Index the uploaded document into MongoDB Vector Search:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/documents/<document_id>/index" \
+  -H "X-API-Key: $RAG_CLIENT_API_KEY"
+```
+
+The same indexing step can be run from the terminal:
+
+```bash
+python scripts/index_uploaded_document.py <document_id>
+```
+
+## Next.js Frontend
+
+The Next.js app lives in `frontend/` and connects to the FastAPI backend.
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open:
+
+```text
+http://127.0.0.1:3000
+```
+
+Set the backend URL to `http://127.0.0.1:8000` and the same API key used by
+FastAPI, such as `test-api-key` for local development.
 
 ## Security Guardrails
 

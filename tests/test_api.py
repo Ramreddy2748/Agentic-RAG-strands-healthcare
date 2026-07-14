@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -9,6 +10,7 @@ from fastapi.testclient import TestClient
 from rag_chatbot.answer_layer import CitedStatement, ClinicalAnswer
 from rag_chatbot.api import app, build_security_rate_limiter, get_rag_service
 from rag_chatbot.embedding_layer import SearchResult
+from rag_chatbot.indexing_layer import DocumentIndexingResult
 from rag_chatbot.observability import PipelineTimings
 from rag_chatbot.rag_service import RAGResponse, RetrievalStats
 
@@ -57,6 +59,7 @@ class FakeRAGService:
 
 class APITests(unittest.TestCase):
     def setUp(self) -> None:
+        self.upload_dir = tempfile.TemporaryDirectory()
         self.environment = patch.dict(
             os.environ,
             {
@@ -64,6 +67,7 @@ class APITests(unittest.TestCase):
                 "RAG_API_KEYS": "test-api-key",
                 "RATE_LIMIT_REQUESTS": "100",
                 "RATE_LIMIT_WINDOW_SECONDS": "60",
+                "UPLOAD_DIR": self.upload_dir.name,
             },
         )
         self.environment.start()
@@ -76,6 +80,7 @@ class APITests(unittest.TestCase):
     def tearDown(self) -> None:
         app.dependency_overrides.clear()
         self.environment.stop()
+        self.upload_dir.cleanup()
 
     def test_health_reports_index_status(self) -> None:
         response = self.client.get("/health")
@@ -90,6 +95,124 @@ class APITests(unittest.TestCase):
         self.assertIn("text/html", response.headers["content-type"])
         self.assertIn("Healthcare Accreditation RAG", response.text)
         self.assertIn('id="ask-form"', response.text)
+
+    def test_upload_document_stores_supported_file(self) -> None:
+        response = self.client.post(
+            "/documents/upload",
+            headers=self.auth_headers,
+            files={
+                "file": (
+                    "policy.pdf",
+                    b"%PDF-1.4 test",
+                    "application/pdf",
+                )
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["filename"], "policy.pdf")
+        self.assertEqual(payload["file_extension"], "pdf")
+        self.assertEqual(payload["status"], "uploaded")
+        self.assertEqual(payload["size_bytes"], len(b"%PDF-1.4 test"))
+        self.assertTrue(payload["document_id"])
+
+    def test_upload_and_index_document_returns_ready_status(self) -> None:
+        with patch("rag_chatbot.api.index_uploaded_document") as indexer:
+            indexer.return_value = DocumentIndexingResult(
+                document_id="doc-from-upload",
+                filename="policy.pdf",
+                file_extension="pdf",
+                element_count=1,
+                chunk_count=1,
+                upserted_count=1,
+                model_name="test-model",
+            )
+
+            response = self.client.post(
+                "/documents/upload-and-index",
+                headers=self.auth_headers,
+                files={
+                    "file": (
+                        "policy.pdf",
+                        b"%PDF-1.4 test",
+                        "application/pdf",
+                    )
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "ready")
+        self.assertEqual(payload["document"]["filename"], "policy.pdf")
+        self.assertEqual(payload["indexing"]["chunk_count"], 1)
+        self.assertEqual(payload["indexing"]["upserted_count"], 1)
+
+    def test_upload_document_rejects_unsupported_file(self) -> None:
+        response = self.client.post(
+            "/documents/upload",
+            headers=self.auth_headers,
+            files={
+                "file": (
+                    "notes.txt",
+                    b"hello",
+                    "text/plain",
+                )
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Only PDF, CSV, and JSON", response.json()["detail"])
+
+    def test_ingest_uploaded_document_returns_preview_elements(self) -> None:
+        upload = self.client.post(
+            "/documents/upload",
+            headers=self.auth_headers,
+            files={
+                "file": (
+                    "policies.csv",
+                    b"section,requirement\nIC.1,Maintain IPCP\n",
+                    "text/csv",
+                )
+            },
+        )
+        document_id = upload.json()["document_id"]
+
+        response = self.client.post(
+            f"/documents/{document_id}/ingest",
+            headers=self.auth_headers,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["document_id"], document_id)
+        self.assertEqual(payload["element_count"], 1)
+        self.assertEqual(payload["elements"][0]["content_type"], "csv_row")
+        self.assertIn("section: IC.1", payload["elements"][0]["text"])
+
+    def test_index_uploaded_document_returns_indexing_counts(self) -> None:
+        with patch("rag_chatbot.api.index_uploaded_document") as indexer:
+            indexer.return_value = DocumentIndexingResult(
+                document_id="doc-1",
+                filename="policies.csv",
+                file_extension="csv",
+                element_count=2,
+                chunk_count=2,
+                upserted_count=2,
+                model_name="test-model",
+            )
+
+            response = self.client.post(
+                "/documents/doc-1/index",
+                headers=self.auth_headers,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["document_id"], "doc-1")
+        self.assertEqual(payload["chunk_count"], 2)
+        self.assertEqual(payload["upserted_count"], 2)
+        self.assertEqual(payload["model_name"], "test-model")
 
     def test_ask_returns_structured_answer_and_sources(self) -> None:
         response = self.client.post(

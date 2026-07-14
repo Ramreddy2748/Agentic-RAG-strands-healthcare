@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import logging
 from pathlib import Path
 from threading import Lock
-from typing import TypeAlias
+from typing import Protocol, TypeAlias
 
 from rag_chatbot.answer_layer import (
     DEFAULT_ANSWER_MODEL,
@@ -69,6 +69,19 @@ SEARCH_MODE_CANDIDATE_COUNTS = {
 }
 
 QUALITY_MODES = {"fast", "balanced", "strict"}
+
+
+class SemanticSearchBackend(Protocol):
+    """Backend that can run semantic vector search for a query."""
+
+    def search(
+        self,
+        question: str,
+        *,
+        top_k: int,
+        batch_size: int,
+        embedder: TextEmbedder,
+    ) -> list[SearchResult]: ...
 
 
 @dataclass(frozen=True)
@@ -171,6 +184,7 @@ class RAGService:
         reranker: PassageScorer | None = None,
         answer_generator: AnswerGenerator | None = None,
         verifier: AnswerVerifier | None = None,
+        semantic_backend: SemanticSearchBackend | None = None,
         router_model: str = DEFAULT_ROUTER_MODEL,
         reranker_model: str = DEFAULT_RERANKER_MODEL,
         answer_model: str = DEFAULT_ANSWER_MODEL,
@@ -183,6 +197,7 @@ class RAGService:
         self.reranker = reranker
         self.answer_generator = answer_generator
         self.verifier = verifier
+        self.semantic_backend = semantic_backend
         self.router_model = router_model
         self.reranker_model = reranker_model
         self.answer_model = answer_model
@@ -199,6 +214,22 @@ class RAGService:
     ) -> RAGService:
         """Create a service from a persisted local vector index."""
         return cls(load_vector_index(index_dir), **kwargs)
+
+    @classmethod
+    def from_mongodb(cls, **kwargs: object) -> RAGService:
+        """Create a service backed by MongoDB Atlas Vector Search."""
+        from rag_chatbot.mongo_vector_store import (
+            MongoSemanticSearchBackend,
+            MongoVectorStore,
+        )
+
+        store = MongoVectorStore.from_env()
+        index = store.load_vector_index()
+        return cls(
+            index,
+            semantic_backend=MongoSemanticSearchBackend(store),
+            **kwargs,
+        )
 
     @property
     def models_ready(self) -> bool:
@@ -482,13 +513,21 @@ class RAGService:
         """Run only the retrievers required by the selected search mode."""
         semantic_results: list[SearchResult] = []
         if search_mode in {"semantic", "hybrid"}:
-            semantic_results = search_vector_index(
-                self.index,
-                question,
-                top_k=candidate_k,
-                batch_size=embedding_batch_size,
-                embedder=self.get_embedder(),
-            )
+            if self.semantic_backend is not None:
+                semantic_results = self.semantic_backend.search(
+                    question,
+                    top_k=candidate_k,
+                    batch_size=embedding_batch_size,
+                    embedder=self.get_embedder(),
+                )
+            else:
+                semantic_results = search_vector_index(
+                    self.index,
+                    question,
+                    top_k=candidate_k,
+                    batch_size=embedding_batch_size,
+                    embedder=self.get_embedder(),
+                )
 
         keyword_results: list[KeywordSearchResult] = []
         if search_mode in {"keyword", "hybrid"}:

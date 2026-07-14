@@ -23,10 +23,13 @@ COPY rag_chatbot ./rag_chatbot
 COPY scripts ./scripts
 
 RUN python -m pip install --upgrade pip \
+    && python -m pip install \
+        --index-url https://download.pytorch.org/whl/cpu \
+        "torch>=2.2,<3" \
     && if [ "$INSTALL_STRANDS" = "true" ]; then \
-        python -m pip install ".[strands]"; \
+        python -m pip install ".[strands,mongodb]"; \
     else \
-        python -m pip install .; \
+        python -m pip install ".[mongodb]"; \
     fi
 
 RUN useradd --create-home --uid 10001 appuser \
