@@ -108,7 +108,7 @@ class PipelineTimingsResponse(BaseModel):
 
 
 class VerificationResponse(BaseModel):
-    """Claim-grounding verification metadata for the generated answer."""
+    """Claim-grounding validation metadata for the generated answer."""
 
     enabled: bool
     verified: bool
@@ -131,6 +131,7 @@ class AskResponse(BaseModel):
     routing_reason: str
     answer: ClinicalAnswer | None
     verification: VerificationResponse
+    validation: VerificationResponse
     sources: list[SourceResponse]
     evidence_sufficient: bool
     evidence_score: float
@@ -596,6 +597,17 @@ def element_to_api(element: DocumentElement) -> DocumentElementResponse:
 
 def response_to_api(response: RAGResponse) -> AskResponse:
     """Convert internal dataclasses into stable API response models."""
+    validation_metadata = VerificationResponse(
+        enabled=response.verification.enabled,
+        verified=response.verification.verified,
+        confidence=response.verification.confidence,
+        checked_claims=response.verification.checked_claims,
+        supported_claims=response.verification.supported_claims,
+        removed_claims=response.verification.removed_claims,
+        unclear_claims=response.verification.unclear_claims,
+        reason=response.verification.reason,
+        unsupported_claims=response.verification.unsupported_claims,
+    )
     return AskResponse(
         request_id=response.request_id,
         question=response.question,
@@ -603,17 +615,8 @@ def response_to_api(response: RAGResponse) -> AskResponse:
         search_mode=response.search_mode,
         routing_reason=response.routing_reason,
         answer=response.answer,
-        verification=VerificationResponse(
-            enabled=response.verification.enabled,
-            verified=response.verification.verified,
-            confidence=response.verification.confidence,
-            checked_claims=response.verification.checked_claims,
-            supported_claims=response.verification.supported_claims,
-            removed_claims=response.verification.removed_claims,
-            unclear_claims=response.verification.unclear_claims,
-            reason=response.verification.reason,
-            unsupported_claims=response.verification.unsupported_claims,
-        ),
+        verification=validation_metadata,
+        validation=validation_metadata,
         sources=[
             result_to_source(rank, result)
             for rank, result in enumerate(response.results, start=1)

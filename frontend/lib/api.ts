@@ -29,6 +29,18 @@ export type Source = {
   rerank_score?: number | null;
 };
 
+export type ValidationMetadata = {
+  enabled: boolean;
+  verified: boolean;
+  confidence: number;
+  checked_claims: number;
+  supported_claims: number;
+  removed_claims: number;
+  unclear_claims: number;
+  reason: string;
+  unsupported_claims: string[];
+};
+
 export type AskResponse = {
   request_id: string;
   question: string;
@@ -36,6 +48,8 @@ export type AskResponse = {
   search_mode: string;
   routing_reason: string;
   answer: ClinicalAnswer | null;
+  verification: ValidationMetadata;
+  validation: ValidationMetadata;
   sources: Source[];
   evidence_sufficient: boolean;
   evidence_score: number;

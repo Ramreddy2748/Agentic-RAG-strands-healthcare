@@ -406,6 +406,11 @@ function AnswerDetails({ response }: { response: AskResponse }) {
         <span>{formatSeconds(response.timings.total_ms)} total</span>
         <span>{formatSeconds(response.timings.retrieval_ms)} retrieval</span>
         <span>{formatSeconds(response.timings.answer_generation_ms)} answer</span>
+        <span>
+          {response.validation.enabled
+            ? `Strands validation ${response.validation.verified ? "passed" : "reviewed"}`
+            : "validation off"}
+        </span>
         <span>{response.evidence_sufficient ? "evidence sufficient" : "low evidence"}</span>
       </div>
     </div>

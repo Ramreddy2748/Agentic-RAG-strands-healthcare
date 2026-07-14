@@ -11,6 +11,7 @@ from rag_chatbot.verification_layer import (
     parse_agent_json,
     verify_clinical_answer,
 )
+from rag_chatbot.validation_layer import validate_clinical_answer
 
 from test_reranking_layer import make_chunk
 
@@ -98,6 +99,22 @@ class VerificationLayerTests(unittest.TestCase):
         self.assertIs(verified.answer, answer)
         self.assertFalse(verified.verification.enabled)
         self.assertTrue(verified.verification.verified)
+
+    def test_validation_layer_alias_uses_strands_verification_pipeline(self) -> None:
+        answer = ClinicalAnswer(
+            summary=CitedStatement(text="Summary.", citations=[1]),
+        )
+
+        validated = validate_clinical_answer(
+            question="Question",
+            answer=answer,
+            sources=[make_chunk(0)],
+            verifier=FakeVerifier([]),
+            enabled=False,
+        )
+
+        self.assertIs(validated.answer, answer)
+        self.assertFalse(validated.verification.enabled)
 
     def test_parse_agent_json_accepts_markdown_fence(self) -> None:
         payload = parse_agent_json(

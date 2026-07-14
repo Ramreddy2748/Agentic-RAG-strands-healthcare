@@ -7,13 +7,13 @@ An end-to-end healthcare RAG workspace for grounded clinical and accreditation
 questions. The project indexes PDFs, CSVs, and JSON files, stores embeddings in
 MongoDB Atlas Vector Search or a local vector index, retrieves evidence with
 semantic, keyword, or hybrid search, and generates cited answers through Gemini.
-It also includes an optional Strands-based verification layer for checking
-generated claims against retrieved citations.
+It also includes an optional Strands validation layer for checking generated
+claims against retrieved citations.
 
 Current status: the core RAG, FastAPI backend, MongoDB vector storage, document
 upload/indexing flow, Next.js frontend, evaluation scripts, Docker support, and
-optional Strands verification scaffold are implemented. The verification layer
-is still being hardened for production use.
+optional Strands validation layer are implemented. The validation layer is
+still being hardened for production use.
 
 ## What Is Built
 
@@ -32,7 +32,7 @@ User query
   -> reciprocal-rank fusion for hybrid search
   -> optional BGE reranking
   -> Gemini cited clinical answer
-  -> optional Strands verification
+  -> optional Strands validation
   -> FastAPI response
   -> Next.js frontend
 ```
@@ -74,7 +74,7 @@ source .venv/bin/activate
 python -m pip install -e '.[mongodb]'
 ```
 
-Install Strands only if you want the optional verification agent:
+Install Strands only if you want the optional validation agent:
 
 ```bash
 python -m pip install -e '.[mongodb,strands]'
@@ -372,13 +372,13 @@ Default candidate depth:
 
 ```text
 fast quality:
-  hybrid 6, semantic 6, keyword 6, rerank off, verification off
+  hybrid 6, semantic 6, keyword 6, rerank off, validation off
 
 balanced quality:
-  keyword 5, semantic 8, hybrid 12, rerank on, verification on
+  keyword 5, semantic 8, hybrid 12, rerank on, validation on
 
 strict quality:
-  more candidates, rerank on, verification on
+  more candidates, rerank on, validation on
 ```
 
 Use `fast` for local speed and `strict` when stronger evidence checking matters.
@@ -402,12 +402,12 @@ Answers are structured for clinical reading:
 
 Citation numbers map to the `sources` array returned by the API.
 
-## Strands Verification
+## Strands Validation Layer
 
-When enabled, the generated answer is sent to a Strands verification agent. The
-agent checks whether each cited claim is supported by the retrieved source text.
-Unsupported or unclear optional claims can be removed before the response is
-returned.
+When enabled, the generated answer is sent to a Strands validation agent. The
+agent verifies whether each cited claim is supported by the retrieved source
+text. Unsupported or unclear optional claims can be removed before the response
+is returned.
 
 Enable or disable:
 
@@ -415,10 +415,21 @@ Enable or disable:
 ENABLE_VERIFICATION=true
 ```
 
-Verification metadata is returned with every answer:
+Validation metadata is returned with every answer. The API keeps the
+`verification` field for backward compatibility and also returns the same data
+as `validation`:
 
 ```json
 {
+  "validation": {
+    "enabled": true,
+    "verified": true,
+    "confidence": 1.0,
+    "checked_claims": 4,
+    "supported_claims": 4,
+    "removed_claims": 0,
+    "unclear_claims": 0
+  },
   "verification": {
     "enabled": true,
     "verified": true,
@@ -574,4 +585,4 @@ The project uses:
 - `BAAI/bge-m3` for embeddings
 - `BAAI/bge-reranker-v2-m3` for reranking
 - Gemini for routing and answer generation
-- optional Strands agent for verification
+- optional Strands agent for validation

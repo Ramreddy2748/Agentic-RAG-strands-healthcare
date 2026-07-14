@@ -236,6 +236,7 @@ class APITests(unittest.TestCase):
         self.assertEqual(payload["timings"]["total_ms"], 10.1)
         self.assertEqual(payload["timings"]["verification_ms"], 0.5)
         self.assertFalse(payload["verification"]["enabled"])
+        self.assertEqual(payload["validation"], payload["verification"])
         self.assertTrue(payload["evidence_sufficient"])
         self.assertEqual(response.headers["x-request-id"], payload["request_id"])
 
