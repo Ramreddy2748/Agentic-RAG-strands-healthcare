@@ -7,6 +7,13 @@ An end-to-end healthcare RAG workspace for grounded clinical and accreditation
 questions. The project indexes PDFs, CSVs, and JSON files, stores embeddings in
 MongoDB Atlas Vector Search or a local vector index, retrieves evidence with
 semantic, keyword, or hybrid search, and generates cited answers through Gemini.
+It also includes an optional Strands-based verification layer for checking
+generated claims against retrieved citations.
+
+Current status: the core RAG, FastAPI backend, MongoDB vector storage, document
+upload/indexing flow, Next.js frontend, evaluation scripts, Docker support, and
+optional Strands verification scaffold are implemented. The verification layer
+is still being hardened for production use.
 
 ## What Is Built
 
