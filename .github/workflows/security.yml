@@ -32,6 +32,8 @@ jobs:
 
       - name: Scan for committed secrets
         uses: gitleaks/gitleaks-action@v3
+        with:
+          config-path: .gitleaks.toml
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_ENABLE_COMMENTS: "false"

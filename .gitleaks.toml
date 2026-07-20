@@ -1,0 +1,15 @@
+title = "Agentic Healthcare RAG Gitleaks Config"
+
+# Historical README examples used a fake local API key in curl snippets.
+# Keep this allowlist narrow: only the custom curl auth-header rule in README.
+[[allowlists]]
+description = "Ignore README curl API-key example false positives"
+paths = [
+  '''README\.md''',
+]
+regexTarget = "match"
+regexes = [
+  '''X-API-Key:\s*(test-api-key|REDACTED)''',
+  '''test-api-key''',
+]
+condition = "AND"
